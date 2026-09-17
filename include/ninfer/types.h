@@ -191,6 +191,7 @@ struct SamplingPreset {
 struct ModelSamplingDefaults {
     SamplingPreset thinking;
     SamplingPreset non_thinking;
+    std::optional<SamplingPreset> post_thinking;
 
     [[nodiscard]] constexpr const SamplingPreset& for_mode(SamplingMode mode) const noexcept {
         return mode == SamplingMode::Thinking ? thinking : non_thinking;
@@ -247,6 +248,8 @@ struct ThinkingControlOptions {
 
 struct ExecutionOptions {
     SamplingOverrides sampling;
+    // Omitted fields use the post-thinking preset; seed inherits the initial request seed.
+    SamplingOverrides post_thinking_sampling;
     std::uint32_t requested_output_tokens = 0;
     bool allow_prefix_reuse               = true;
     ThinkingControlOptions thinking;

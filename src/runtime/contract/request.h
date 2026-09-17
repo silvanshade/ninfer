@@ -11,6 +11,7 @@ namespace ninfer::runtime {
 // and validated these values before constructing the runtime request.
 struct ResolvedExecutionOptions {
     ResolvedSamplingParameters sampling;
+    std::optional<ResolvedSamplingParameters> post_thinking_sampling;
     std::uint32_t requested_output_tokens = 0;
     bool allow_prefix_reuse               = true;
     ThinkingControlOptions thinking;
@@ -25,6 +26,7 @@ struct ResolvedRequestOptions {
 enum class ContinuationAction : std::uint8_t {
     Decode,
     ApplyTargetControl,
+    ApplyPostThinkingSampling,
 };
 
 struct OutputDecision {

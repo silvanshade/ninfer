@@ -10,10 +10,19 @@
 
 namespace ninfer::ops::detail {
 
-__global__ void increment_token_counts_kernel(const std::int32_t* token_ids, std::int32_t count,
-                                              std::int32_t* token_counts) {
+// Apply one atomic adjustment per represented token occurrence.
+// # Specification
+// - requires: validated non-overlapping I32 storage; IDs and resulting counts in range.
+// - ensures: each token occurrence contributes delta exactly once.
+// - fails: none for valid device storage.
+// - panics: none.
+// # Adequacy
+// - hypothesis: repeated IDs distinguish atomic multiplicity from assignment.
+// - witness: tests/ops/test_sampling.cpp::increment_counts_contract.
+__global__ void adjust_token_counts_kernel(const std::int32_t* token_ids, std::int32_t count,
+                                           std::int32_t* token_counts, std::int32_t delta) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (index < count) { atomicAdd(&token_counts[token_ids[index]], 1); }
+    if (index < count) { atomicAdd(&token_counts[token_ids[index]], delta); }
 }
 
 std::size_t sampling_workspace_exact_bytes(std::int32_t token_domain, std::int32_t columns) {
@@ -50,13 +59,22 @@ void sample_batch_launch(const Tensor& logits, Tensor& out, std::int32_t token_d
     CUDA_CHECK(cudaGetLastError());
 }
 
-void increment_token_counts_launch(const Tensor& token_ids, Tensor& token_counts,
-                                   cudaStream_t stream) {
+// Launch the validated count adjustment.
+// # Specification
+// - requires: arguments satisfy ops::adjust_token_counts.
+// - ensures: enqueues one adjustment per token occurrence on stream.
+// - fails: CUDA launch errors propagate.
+// - panics: none.
+// # Adequacy
+// - hypothesis: exact count observations distinguish skipped and duplicated adjustments.
+// - witness: tests/ops/test_sampling.cpp::increment_counts_contract.
+void adjust_token_counts_launch(const Tensor& token_ids, Tensor& token_counts, std::int32_t delta,
+                                cudaStream_t stream) {
     constexpr int kBlock = 256;
     const int count      = token_ids.ne[0];
-    increment_token_counts_kernel<<<div_up(count, kBlock), kBlock, 0, stream>>>(
+    adjust_token_counts_kernel<<<div_up(count, kBlock), kBlock, 0, stream>>>(
         static_cast<const std::int32_t*>(token_ids.data), count,
-        static_cast<std::int32_t*>(token_counts.data));
+        static_cast<std::int32_t*>(token_counts.data), delta);
     CUDA_CHECK(cudaGetLastError());
 }
 

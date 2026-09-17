@@ -59,20 +59,33 @@ void sample(const Tensor& logits, Tensor& out, std::int32_t token_domain,
                                 scratch, stream);
 }
 
-void increment_token_counts(const Tensor& token_ids, Tensor& token_counts, cudaStream_t stream) {
+// Adjust committed counts without changing token IDs.
+// # Specification
+// - requires: IDs and count storage satisfy ops::adjust_token_counts.
+// - ensures: dispatches the specified additive count adjustment.
+// - fails: invalid_argument for invalid metadata or delta; CUDA errors propagate.
+// - panics: none.
+// # Adequacy
+// - hypothesis: repeated IDs and negative delta expose lost updates and sign errors.
+// - witness: tests/ops/test_sampling.cpp::increment_counts_contract.
+void adjust_token_counts(const Tensor& token_ids, Tensor& token_counts, std::int32_t delta,
+                         cudaStream_t stream) {
+    if (delta != 1 && delta != -1) {
+        throw std::invalid_argument("adjust_token_counts: delta must be +1 or -1");
+    }
     if (token_ids.dtype != DType::I32 || token_ids.ne[0] <= 0 || token_ids.ne[1] != 1 ||
         token_ids.ne[2] != 1 || token_ids.ne[3] != 1 || !token_ids.is_contiguous() ||
         token_ids.data == nullptr) {
         throw std::invalid_argument(
-            "increment_token_counts: token_ids must be a contiguous non-empty I32 vector");
+            "adjust_token_counts: token_ids must be a contiguous non-empty I32 vector");
     }
     if (token_counts.dtype != DType::I32 || token_counts.ne[0] <= 0 || token_counts.ne[1] != 1 ||
         token_counts.ne[2] != 1 || token_counts.ne[3] != 1 || !token_counts.is_contiguous() ||
         token_counts.data == nullptr) {
         throw std::invalid_argument(
-            "increment_token_counts: token_counts must be a contiguous non-empty I32 vector");
+            "adjust_token_counts: token_counts must be a contiguous non-empty I32 vector");
     }
-    detail::increment_token_counts_launch(token_ids, token_counts, stream);
+    detail::adjust_token_counts_launch(token_ids, token_counts, delta, stream);
 }
 
 } // namespace ninfer::ops

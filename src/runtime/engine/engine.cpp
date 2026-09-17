@@ -34,7 +34,13 @@ runtime::ResolvedRequestOptions resolve_request_options(const ModelSamplingDefau
     }
     runtime::ResolvedRequestOptions resolved;
     resolved.execution.sampling =
-        runtime::resolve_sampling(defaults, mode, options.execution.sampling);
+        runtime::resolve_sampling(defaults.for_mode(mode), options.execution.sampling);
+    if (mode == SamplingMode::Thinking && defaults.post_thinking) {
+        auto post = options.execution.post_thinking_sampling;
+        if (!post.seed) { post.seed = resolved.execution.sampling.seed; }
+        resolved.execution.post_thinking_sampling =
+            runtime::resolve_sampling(*defaults.post_thinking, post);
+    }
     resolved.execution.requested_output_tokens = options.execution.requested_output_tokens;
     resolved.execution.allow_prefix_reuse      = options.execution.allow_prefix_reuse;
     resolved.execution.thinking                = options.execution.thinking;

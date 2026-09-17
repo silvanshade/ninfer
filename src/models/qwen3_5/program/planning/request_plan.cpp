@@ -252,6 +252,10 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
                                                ? FinishReason::OutputLimit
                                                : FinishReason::ContextCapacity;
     base->sampling                       = translate_sampling(options.sampling);
+    if (options.post_thinking_sampling) {
+        validate_sampling(*options.post_thinking_sampling);
+        base->post_thinking_sampling = translate_sampling(*options.post_thinking_sampling);
+    }
     base->allow_prefix_reuse             = options.allow_prefix_reuse;
     base->summary.publish_continuation =
         options.allow_prefix_reuse && prompt.identity.reusable && context_cache.enabled;
@@ -452,6 +456,7 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
     auto plan                         = std::make_unique<AdmissionCandidateImpl>();
     plan->summary                     = base.summary;
     plan->sampling                    = base.sampling;
+    plan->post_thinking_sampling      = base.post_thinking_sampling;
     plan->text_kv_page_entitlement    = base.text_kv_page_entitlement;
     plan->backend_kv_page_entitlement = base.backend_kv_page_entitlement;
     plan->root_rebuild_work           = base.root_rebuild_work;

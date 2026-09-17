@@ -813,6 +813,30 @@ non-thinking mode. Qwen3.6-35B-A3B differs only in its thinking presence penalty
 Frequency penalty is `0` for all registered presets. Process flags override registered values,
 request fields override process flags, and `--greedy` finally forces temperature `0`.
 
+### Post-thinking sampling
+
+Chat Completions, Responses, and Anthropic Messages accept the `post_thinking` request extension:
+
+```json
+{
+  "post_thinking": {
+    "temperature": 0.2,
+    "top_p": 0.95,
+    "top_k": 20,
+    "presence_penalty": 0,
+    "frequency_penalty": 0.2
+  }
+}
+```
+
+For thinking requests, the answer sampler takes effect immediately after `</think>`, whether generated naturally or forced by a thinking budget. Speculative tokens beyond that boundary are discarded and resampled. Non-thinking requests retain their initial sampler. Raw output does not change the transition.
+
+The registered answer preset uses temperature `0.2`, top-p `0.95`, top-k `20`, min-p `0`, and zero presence/frequency penalties. Process-level and initial request sampling overrides do not replace it. Fields in `post_thinking` override this preset; omitted or null fields retain defaults. `--greedy` forces temperature `0` in both phases.
+
+Accepted fields are `temperature` (`0..2`), `top_p` and `min_p` (`0..1`), integer `top_k` (`0..20`), presence/frequency penalties (`-2..2`), and integer `seed`. An omitted seed inherits the resolved initial seed. An explicit seed changes the random key without restarting sequence position. Accepted token history remains available to penalties across the transition. Invalid values return HTTP 400.
+
+### Context-cache capacity
+
 For `C=--max-concurrency` and `H=--device-state-slots`, total Device StateImage capacity is `C+H`:
 `C` slots guarantee active requests and `H` is a global checkpoint pool. Host State and Host KV are
 independent startup-fixed pinned-memory capacities; Host KV is shared by Main and the selected

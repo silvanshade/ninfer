@@ -637,7 +637,8 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
             : speculative_backend == SpeculativeBackend::DFlash ? prompt_tokens
                                                                 : 0U;
         ensure_sequence_kv_mapped(sequence, prompt_tokens, backend_materialized);
-        install_sampling(sequence, request, request_plan.sampling);
+        install_sampling(sequence, request, request_plan.sampling,
+                         request_plan.post_thinking_sampling);
         sequence.rope_delta = staged.prompt.rope_delta;
         set_device_i32(io.rope_delta, sequence.rope_delta);
 
@@ -781,8 +782,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
         }
         const std::uint32_t committed = cancelled[row] ? 0U : accepted_tokens[row];
         if ((cancelled[row] && accepted_tokens[row] != 0) ||
-            (!cancelled[row] && (committed == 0 || committed > pending.produced ||
-                                 (!terminal[row] && committed != pending.produced)))) {
+            (!cancelled[row] && (committed == 0 || committed > pending.produced))) {
             throw std::logic_error("speculative pending row has an invalid committed prefix");
         }
         const StateImageSelectors selectors = state_selectors(sequence);
@@ -790,11 +790,10 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
             ops::GdnReplayFoldRow{.source_state_slot      = selectors.source,
                                   .destination_state_slot = selectors.destination,
                                   .commit_columns         = static_cast<std::int32_t>(committed)};
-        const bool partial_terminal =
-            !cancelled[row] && terminal[row] && committed < pending.produced;
+        const bool partial = !cancelled[row] && committed < pending.produced;
         hidden_selectors[row] =
-            static_cast<std::int32_t>(partial_terminal ? committed - 1U : pending.produced - 1U);
-        needs_hidden_correction = needs_hidden_correction || partial_terminal;
+            static_cast<std::int32_t>(partial ? committed - 1U : pending.produced - 1U);
+        needs_hidden_correction = needs_hidden_correction || partial;
     }
 
     const auto tail_started = Clock::now();
@@ -803,22 +802,26 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
         replay_fold->execute(std::span<const ops::GdnReplayFoldRow>(fold_rows.data(), lanes.size()),
                              device.stream);
 
-        // Sparse acceptance reads counts. Publish only the prefix licensed by the Frontend.
-        if (speculative_backend == SpeculativeBackend::DFlash2) {
-            for (std::size_t row = 0; row < lanes.size(); ++row) {
-                if (cancelled[row] || !requests[lanes[row]].sampling_host.token_counts) {
-                    continue;
-                }
-                const auto count = static_cast<std::int32_t>(accepted_tokens[row]);
-                Tensor ids =
-                    io.dflash_decode->licensed_tokens.slice(1, static_cast<std::int32_t>(row), 1)
-                        .slice(0, 0, count)
-                        .view({count});
-                Tensor counts =
-                    token_counts.slice(1, static_cast<std::int32_t>(lanes[row]), 1)
-                        .view({dimension(parameters.model.resources().public_token_count)});
-                ops::increment_token_counts(ids, counts, device.stream);
-            }
+        // DFlash2 counts only the committed prefix. Other backends counted the licensed round
+        // during acceptance; remove its discarded suffix before any continuation can sample.
+        for (std::size_t row = 0; row < lanes.size(); ++row) {
+            const RequestControl& request = requests[lanes[row]];
+            if (cancelled[row] || !request.sampling_host.token_counts) { continue; }
+            const bool deferred_counts = speculative_backend == SpeculativeBackend::DFlash2;
+            const std::uint32_t begin  = deferred_counts ? 0U : accepted_tokens[row];
+            const std::uint32_t count =
+                deferred_counts ? accepted_tokens[row] : request.pending.produced - begin;
+            if (count == 0) { continue; }
+            const Tensor& licensed = speculative_backend == SpeculativeBackend::Mtp
+                                         ? io.mtp_decode->licensed_tokens
+                                         : io.dflash_decode->licensed_tokens;
+            Tensor ids =
+                licensed.slice(1, static_cast<std::int32_t>(row), 1)
+                    .slice(0, static_cast<std::int32_t>(begin), static_cast<std::int32_t>(count))
+                    .view({static_cast<std::int32_t>(count)});
+            Tensor counts = token_counts.slice(1, static_cast<std::int32_t>(lanes[row]), 1)
+                                .view({dimension(parameters.model.resources().public_token_count)});
+            ops::adjust_token_counts(ids, counts, deferred_counts ? 1 : -1, device.stream);
         }
 
         if (needs_hidden_correction) {
@@ -857,7 +860,9 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
             std::array<std::uint32_t, kMaximumConcurrency> append_counts{};
             std::size_t append_size = 0;
             for (std::size_t row = 0; row < lanes.size(); ++row) {
-                if (!cancelled[row] && terminal[row]) {
+                if (!cancelled[row] &&
+                    (terminal[row] ||
+                     accepted_tokens[row] < requests[lanes[row]].pending.produced)) {
                     append_lanes[append_size]  = lanes[row];
                     append_starts[append_size] = requests[lanes[row]].pending.base_E;
                     append_counts[append_size] = accepted_tokens[row];
@@ -917,7 +922,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
 
             if (speculative_backend == SpeculativeBackend::Mtp) {
                 sequence.mtp_kv_valid = sequence.execution_frontier;
-                if (terminal[row]) {
+                if (terminal[row] || committed < pending.produced) {
                     sequence.mtp_draft_count = 0;
                 } else {
                     const std::int32_t next  = mtp_host_egress->next_extents[row];
@@ -928,8 +933,9 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
                     }
                 }
             } else {
-                sequence.dflash_context_frontier =
-                    terminal[row] ? sequence.execution_frontier : pending.base_E;
+                sequence.dflash_context_frontier = terminal[row] || committed < pending.produced
+                                                       ? sequence.execution_frontier
+                                                       : pending.base_E;
             }
 
             commit_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));

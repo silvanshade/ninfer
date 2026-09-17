@@ -929,6 +929,7 @@ void parse_generation_fields(const Json& body, GenerationRequest& request) {
         }
     }
 
+    request.post_thinking_sampling = parse_post_thinking_sampling(body);
     request.sampling.temperature = optional_number(body, "temperature");
     request.sampling.top_p       = optional_number(body, "top_p");
     request.sampling.top_k       = optional_int(body, "top_k");

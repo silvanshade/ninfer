@@ -77,8 +77,17 @@ void sample(const Tensor& logits, Tensor& out, std::int32_t token_domain,
             const SamplingConfig* configs, const Tensor& logical_positions, std::int32_t purpose,
             WorkspaceArena& workspace, cudaStream_t stream);
 
-// Adds every id in the contiguous non-empty I32 token_ids vector to the contiguous I32
-// [token_domain] committed count array. IDs must be in [0,token_domain).
-void increment_token_counts(const Tensor& token_ids, Tensor& token_counts, cudaStream_t stream);
+// Adjust each token occurrence by delta in a committed generated-token count array.
+// # Specification
+// - requires: non-overlapping contiguous non-empty I32 vectors; IDs in [0,token_domain);
+//   delta is +1 or -1; resulting counts are nonnegative and fit I32.
+// - ensures: counts[v] gains delta times the multiplicity of v in token_ids; IDs stay unchanged.
+// - fails: invalid_argument for invalid tensor metadata or delta; CUDA errors propagate.
+// - panics: none.
+// # Adequacy
+// - hypothesis: duplicate IDs and suffix removal distinguish lost updates and wrong signs.
+// - witness: tests/ops/test_sampling.cpp::increment_counts_contract.
+void adjust_token_counts(const Tensor& token_ids, Tensor& token_counts, std::int32_t delta,
+                         cudaStream_t stream);
 
 } // namespace ninfer::ops

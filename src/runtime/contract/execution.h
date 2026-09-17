@@ -33,6 +33,8 @@ enum class CommitObservation : std::uint8_t {
 };
 
 struct CommitDecision {
+    // Any positive prefix may remain active. Program restores all continuation state to that
+    // prefix and discards speculative suffix effects before returning Active.
     std::uint32_t accepted_tokens = 0;
     bool terminal                 = false;
     bool cancelled                = false;

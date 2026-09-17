@@ -344,10 +344,9 @@ public:
         state.in_reasoning        = split_reasoning;
         prefix_execution.tracking = starts_in_reasoning;
         semantic.budget           = thinking.budget;
-        // The presentation decoder already tracks normal reasoning output. Keep the independent
-        // semantic tracker dormant unless a cap needs it, so the default unlimited path does not
-        // decode every model token twice.
-        semantic.in_reasoning = starts_in_reasoning && thinking.budget.has_value();
+        // The semantic tracker advances only for a budget or an explicit sampling boundary.
+        // Unlike presentation state, it also recognizes reasoning closure in raw output.
+        semantic.in_reasoning = starts_in_reasoning;
     }
 
     std::shared_ptr<const fi::Tokenizer> tokenizer;
@@ -408,7 +407,8 @@ OutputSession::OutputSession(
 
 runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> tokens,
                                                      std::uint32_t total_budget_remaining,
-                                                     FinishReason limit_reason) {
+                                                     FinishReason limit_reason,
+                                                     bool yield_on_reasoning_close) {
     if (impl_ == nullptr) { throw std::logic_error("output session is empty"); }
     if (impl_->state.terminal) { throw std::logic_error("output session is already terminal"); }
     if (impl_->preview_ready) { throw std::logic_error("output session already has a preview"); }
@@ -459,7 +459,8 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         }
 
         if (impl_->preview_state.in_reasoning) { ++impl_->preview_state.reasoning_tokens; }
-        if (impl_->preview_semantic.in_reasoning) {
+        const bool was_reasoning = impl_->preview_semantic.in_reasoning;
+        if (was_reasoning && (impl_->preview_semantic.budget || yield_on_reasoning_close)) {
             ++impl_->preview_semantic.model_thinking_tokens;
             if (impl_->preview_semantic.budget &&
                 impl_->preview_semantic.model_thinking_tokens > *impl_->preview_semantic.budget) {
@@ -498,6 +499,11 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
             }
             terminalize(impl_->preview_state, impl_->policy, impl_->preview_output, count);
             return complete(count, FinishReason::StopToken);
+        }
+        if (yield_on_reasoning_close && was_reasoning && !impl_->preview_semantic.in_reasoning &&
+            count < total_budget_remaining) {
+            return complete(count, FinishReason::None,
+                            runtime::ContinuationAction::ApplyPostThinkingSampling);
         }
     }
 

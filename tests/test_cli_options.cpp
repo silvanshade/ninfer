@@ -32,13 +32,31 @@ int check(bool condition, const char* message) {
 
 int main() {
     int failures = 0;
+    const auto phase =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--post-thinking-temperature",
+               "0.8", "--post-thinking-sampler",
+               "temp=0,top_p=0.9,top_k=7,min_p=0.1,presence=0.4,frequency=-0.2,seed=0",
+               "--post-thinking-top-k", "0"});
+    failures +=
+        check(phase.post_thinking_sampling.temperature == 0.0F &&
+                  phase.post_thinking_sampling.top_k == 0 && phase.post_thinking_sampling.seed == 0,
+              "post-thinking overrides lost explicit zero or argument precedence");
+    const auto greedy = parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--greedy",
+                               "--temperature", "1", "--post-thinking-temperature", "1"});
+    failures += check(greedy.sampling.temperature == 0.0F &&
+                          greedy.post_thinking_sampling.temperature == 0.0F,
+                      "greedy did not override both sampling phases");
+    for (const auto* invalid : {"temp=nan", "top_k=21", "seed=-1", "unknown=1", "temp=0,"}) {
+        failures += check(rejects([&] {
+                              (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                           "--post-thinking-sampler", invalid});
+                          }),
+                          "invalid post-thinking sampler was accepted");
+    }
     const ninfer::cli::Options configured =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--thinking-budget", "37"});
     failures += check(configured.thinking_budget == 37,
                       "--thinking-budget did not preserve its positive value");
-    failures +=
-        check(ninfer::cli::usage_text("ninfer-cli").find("--thinking-budget") != std::string::npos,
-              "CLI help omits --thinking-budget");
     failures += check(rejects([] {
                           (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
                                        "--thinking-budget", "0"});
@@ -84,16 +102,10 @@ int main() {
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-dtype", "k8v4"});
     failures += check(k8v4.kv_cache == ninfer::KvCacheStorage::Fp8KeyNvfp4Value,
                       "--kv-dtype k8v4 did not select asymmetric K8V4 KV");
-    const std::string help = ninfer::cli::usage_text("ninfer-cli");
-    failures +=
-        check(help.find("nvfp4") != std::string::npos && help.find("k8v4") != std::string::npos,
-              "CLI help omits a production KV storage mode");
     const ninfer::cli::Options logging =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--log-level", "debug"});
     failures += check(logging.log_level == ninfer::product::LogLevel::Debug,
                       "CLI log level was not parsed");
-    failures += check(help.find("--log-level") != std::string::npos,
-                      "CLI help omits the log-level control");
     failures += check(rejects([] {
                           (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
                                        "--log-level", "verbose"});

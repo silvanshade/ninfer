@@ -41,6 +41,7 @@ struct Options {
 
     // Omitted fields are resolved from the loaded model and rendered prompt mode by Engine.
     SamplingOverrides sampling;
+    SamplingOverrides post_thinking_sampling;
     bool greedy                 = false;
     product::LogLevel log_level = product::LogLevel::Info;
 };

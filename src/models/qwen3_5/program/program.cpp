@@ -440,6 +440,16 @@ CommitResult Program::commit(PendingBatch&& pending,
     return impl_->commit(std::move(pending), decisions, observation, failed_timing);
 }
 
+// Forward the active sampling-phase mutation to its Program owner.
+// # Specification
+// - requires: a live active sequence with an unapplied post-thinking preset.
+// - ensures: installs that preset without resetting accepted-token history or position.
+// - fails: logic_error for invalid sequence or phase; CUDA errors propagate.
+// - panics: none.
+void Program::apply_post_thinking_sampling(SequenceHandle sequence) {
+    impl_->apply_post_thinking_sampling(sequence);
+}
+
 DiscardResult Program::abort_pending(PendingBatch&& pending) noexcept {
     return impl_->abort_pending(std::move(pending));
 }

@@ -284,7 +284,7 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
                                              static_cast<std::int32_t>(row_stride));
             Tensor counts = token_counts.slice(1, static_cast<std::int32_t>(lane), 1)
                                 .view({dimension(parameters.model.resources().public_token_count)});
-            ops::increment_token_counts(ids, counts, device.stream);
+            ops::adjust_token_counts(ids, counts, 1, device.stream);
         }
         work.reset();
     }
@@ -473,9 +473,8 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
                     "active cancellation overlaps the global context transaction");
             }
             if ((decision.cancelled && (decision.accepted_tokens != 0 || !decision.terminal)) ||
-                (!decision.cancelled &&
-                 (decision.accepted_tokens == 0 || decision.accepted_tokens > candidate.produced ||
-                  (!decision.terminal && decision.accepted_tokens != candidate.produced))) ||
+                (!decision.cancelled && (decision.accepted_tokens == 0 ||
+                                         decision.accepted_tokens > candidate.produced)) ||
                 (decision.prefix_execution_split_after &&
                  (decision.cancelled || *decision.prefix_execution_split_after == 0 ||
                   *decision.prefix_execution_split_after > decision.accepted_tokens))) {

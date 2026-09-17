@@ -926,6 +926,13 @@ public:
     commit(PendingBatch&& pending, std::span<const runtime::CommitDecision> decisions,
            runtime::CommitObservation observation  = runtime::CommitObservation::AllRows,
            runtime::ExecutionTiming* failed_timing = nullptr);
+    // Apply the request-owned post-thinking preset once to an active sequence.
+    // # Specification
+    // - requires: a live active sequence with a configured, unapplied post-thinking preset.
+    // - ensures: subsequent sampling uses that preset and retained counts at the same position.
+    // - fails: logic_error for invalid sequence or phase; CUDA errors propagate.
+    // - panics: none.
+    void apply_post_thinking_sampling(SequenceHandle sequence);
     [[nodiscard]] DiscardResult abort_pending(PendingBatch&& pending) noexcept;
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;
     [[nodiscard]] AbortResult abort(SequenceHandle sequence) noexcept;

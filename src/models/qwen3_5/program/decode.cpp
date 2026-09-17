@@ -132,10 +132,12 @@ DecodeGraphExecutable& install_graph_profile(DecodeGraphFamily& family, DecodeGr
 } // namespace
 
 void ProgramImpl::install_sampling(SequenceState& sequence, RequestControl& request,
-                                   const ops::SamplingConfig& config) {
+                                   const ops::SamplingConfig& config,
+                                   const std::optional<ops::SamplingConfig>& post_thinking) {
     Tensor counts = token_counts.slice(1, static_cast<std::int32_t>(sequence.lane), 1)
                         .view({dimension(parameters.model.resources().public_token_count)});
     request.sampling_host     = config;
+    request.post_thinking_sampling = post_thinking;
     request.speculative_stats = SpeculativeStats{
         .backend               = speculative_backend,
         .enabled               = speculative_backend != SpeculativeBackend::None,
@@ -143,11 +145,40 @@ void ProgramImpl::install_sampling(SequenceState& sequence, RequestControl& requ
         .accepted_per_position = std::vector<std::uint64_t>(draft_window, 0),
     };
     const bool penalties = request.sampling_host.presence_penalty != 0.0F ||
-                           request.sampling_host.frequency_penalty != 0.0F;
+                           request.sampling_host.frequency_penalty != 0.0F ||
+                           (post_thinking && (post_thinking->presence_penalty != 0.0F ||
+                                              post_thinking->frequency_penalty != 0.0F));
     if (penalties) { CUDA_CHECK(cudaMemsetAsync(counts.data, 0, counts.bytes(), device.stream)); }
     request.sampling_host.token_counts =
         penalties ? static_cast<std::int32_t*>(counts.data) : nullptr;
     Tensor config_lane = sampling_config.slice(1, static_cast<std::int32_t>(sequence.lane), 1);
+    CUDA_CHECK(cudaMemcpyAsync(config_lane.data, &request.sampling_host,
+                               sizeof(request.sampling_host), cudaMemcpyHostToDevice,
+                               device.stream));
+}
+
+// Switch an active sequence without resetting its counter key position or penalty history.
+// # Specification
+// - requires: sequence capability belongs to this Program.
+// - ensures: the configured post-thinking preset becomes active once; counts and frontiers stay;
+//   proposals made under the previous preset are discarded.
+// - fails: logic_error for invalid capability, inactive sequence or absent preset; CUDA errors.
+// - panics: none.
+void ProgramImpl::apply_post_thinking_sampling(SequenceHandle handle) {
+    if (!valid_sequence(handle)) {
+        throw std::logic_error("post-thinking sampling sequence capability is invalid");
+    }
+    const std::uint32_t lane = ContractAccess::lane(handle).value;
+    RequestControl& request  = requests[lane];
+    if (request.lifecycle != Lifecycle::Active || !request.post_thinking_sampling) {
+        throw std::logic_error("post-thinking sampling requires an active, unapplied phase");
+    }
+    auto* const counts                 = request.sampling_host.token_counts;
+    request.sampling_host              = *request.post_thinking_sampling;
+    request.sampling_host.token_counts = counts;
+    request.post_thinking_sampling.reset();
+    active_sequence(lane).mtp_draft_count = 0;
+    Tensor config_lane = sampling_config.slice(1, static_cast<std::int32_t>(lane), 1);
     CUDA_CHECK(cudaMemcpyAsync(config_lane.data, &request.sampling_host,
                                sizeof(request.sampling_host), cudaMemcpyHostToDevice,
                                device.stream));

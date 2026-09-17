@@ -1111,9 +1111,14 @@ private:
                     continue;
                 }
                 const OutputDecision decision = request->output.preview_model(
-                    row_tokens, request->budget->remaining(), request->budget->limit_reason());
+                    row_tokens, request->budget->remaining(), request->budget->limit_reason(),
+                    request->options.execution.post_thinking_sampling.has_value());
+                const bool sampling_transition =
+                    decision.continuation == ContinuationAction::ApplyPostThinkingSampling;
                 if (decision.accepted_tokens == 0 || decision.accepted_tokens > count ||
-                    (!decision.finished() && decision.accepted_tokens != count) ||
+                    (!decision.finished() && decision.accepted_tokens != count &&
+                     !sampling_transition) ||
+                    (sampling_transition && !request->options.execution.post_thinking_sampling) ||
                     (decision.finished() && decision.continuation != ContinuationAction::Decode) ||
                     (decision.prefix_execution_split_after &&
                      (*decision.prefix_execution_split_after == 0 ||
@@ -1222,6 +1227,10 @@ private:
                 if (!cancelled[row]) {
                     request->budget->commit(accepted);
                     if (decode_round) { Scheduling::consume_service_work(*request, accepted); }
+                }
+                if (!decisions[row].terminal &&
+                    continuations[row] == ContinuationAction::ApplyPostThinkingSampling) {
+                    instance_.program->apply_post_thinking_sampling(*request->sequence);
                 }
                 auto published = request->output.commit_preview();
                 auto timing    = record_committed_output(request, accepted);
@@ -1903,6 +1912,9 @@ private:
             Scheduling::consume_service_work(*request, membership.row_stride);
             cumulative_stats_.committed_decode_tokens += membership.row_stride;
             auto timing = record_committed_output(request, membership.row_stride);
+            if (request->options.execution.post_thinking_sampling) {
+                instance_.program->apply_post_thinking_sampling(*request->sequence);
+            }
             append_output(request, request->output.commit_preview(), std::move(timing));
             request->model_state = EngineRequestState::DecodeReady;
         }

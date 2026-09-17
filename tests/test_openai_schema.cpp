@@ -2,6 +2,8 @@
 #include "serve/openai_chat.h"
 #include "serve/openai_common.h"
 #include "serve/translate.h"
+#include "serve/anthropic_messages.h"
+#include "serve/openai_responses.h"
 
 #include <nlohmann/json.hpp>
 
@@ -69,6 +71,55 @@ Json parse_sse(const std::string& event) {
         throw std::runtime_error("invalid SSE framing");
     }
     return Json::parse(event.substr(prefix.size(), event.size() - prefix.size() - 2));
+}
+
+int test_post_thinking_sampling() {
+    int failures = 0;
+    for (int protocol = 0; protocol < 3; ++protocol) {
+        Json body = protocol == 1 ? Json{{"model", "qwen"}, {"input", "hello"}} : base_request();
+        if (protocol != 1) { body["max_tokens"] = 2048; }
+        const auto generation = [&](const Json& value) -> GenerationRequest {
+            if (protocol == 0) { return parse_chat_completion_request(value, limits()).generation; }
+            if (protocol == 1) {
+                return parse_openai_responses_create_request(value, limits()).prompt.generation;
+            }
+            return parse_anthropic_messages_request(value, limits()).generation;
+        };
+        ServeOptions server;
+        server.sampling_overrides.seed  = 99;
+        server.sampling_overrides.top_p = 0.1F;
+        const auto translate            = [&](const Json& value) {
+            const auto request = generation(value);
+            return to_request_options(request, server, resolve_prompt_semantics(request, server),
+                                      true);
+        };
+        body["post_thinking"] = Json{{"temperature", 0}, {"top_k", 0}};
+        auto resolved         = translate(body);
+        failures += check(resolved.execution.post_thinking_sampling.seed == 99 &&
+                              resolved.execution.post_thinking_sampling.temperature == 0.0F &&
+                              resolved.execution.post_thinking_sampling.top_k == 0 &&
+                              !resolved.execution.post_thinking_sampling.top_p,
+                          "post-thinking phase lost zero, seed inheritance or preset isolation");
+        body["post_thinking"]["seed"]        = 0;
+        body["post_thinking"]["temperature"] = 1;
+        server.greedy                        = true;
+        resolved                             = translate(body);
+        failures += check(resolved.execution.sampling.temperature == 0.0F &&
+                              resolved.execution.post_thinking_sampling.temperature == 0.0F &&
+                              resolved.execution.post_thinking_sampling.seed == 0,
+                          "greedy or explicit post-thinking seed precedence failed");
+        for (const auto& [invalid, param] : std::vector<std::pair<Json, std::string>>{
+                 {42, "post_thinking"},
+                 {Json{{"temperature", 2.1}}, "post_thinking.temperature"},
+                 {Json{{"top_k", 21}}, "post_thinking.top_k"},
+                 {Json{{"seed", 1.5}}, "post_thinking.seed"}}) {
+            body["post_thinking"] = invalid;
+            const auto error      = api_error([&] { (void)generation(body); });
+            failures += check(error.status == 400 && error.param == param,
+                              "post-thinking validation did not reject the invalid field");
+        }
+    }
+    return failures;
 }
 
 int test_request_envelope_and_sampling() {
@@ -780,6 +831,7 @@ int test_common_objects() {
 
 int main() {
     int failures = 0;
+    failures += test_post_thinking_sampling();
     failures += test_request_envelope_and_sampling();
     failures += test_standard_field_policy();
     failures += test_constrained_decoding_extensions();

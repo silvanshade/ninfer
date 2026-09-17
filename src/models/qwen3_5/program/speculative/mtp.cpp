@@ -1,4 +1,5 @@
 #include "ninfer/ops/speculative_round.h"
+#include "ninfer/ops/position.h"
 #include "models/qwen3_5/program/graph_execution.h"
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/context.h"
@@ -156,6 +157,15 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                         ar_positions, ar_rope_positions, ar_valid_columns,
                                         static_cast<std::int32_t>(state.text_cache.max_context()),
                                         state.execution.device.stream);
+            if (state.execution.rope_scaling_factor != 1.0F) {
+                for (std::uint32_t step = 0; step + 1 < k; ++step) {
+                    Tensor rope = ar_rope_positions.slice(1, static_cast<std::int32_t>(step), 1)
+                                      .view({batch_size});
+                    ops::scale_rope_positions(rope, state.execution.rope_scaling_original_context,
+                                              state.execution.rope_scaling_factor,
+                                              state.execution.device.stream);
+                }
+            }
             card.mtp_forward_decode_batch(alignment_ids, target_hidden, target_positions,
                                           target_rope, licensed_counts, mtp_rows, envelopes.batch,
                                           alignment_hidden);

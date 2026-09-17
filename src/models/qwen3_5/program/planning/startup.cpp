@@ -22,6 +22,7 @@
 #include "ninfer/ops/softmax_attention.h"
 #include "ninfer/ops/speculative_round.h"
 #include <algorithm>
+#include <cmath>
 #include <initializer_list>
 #include <limits>
 #include <stdexcept>
@@ -292,8 +293,10 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     const auto finish = [](const WorkspaceLayoutBuilder& layout) { return layout.peak_bytes(1); };
 
     const auto text_common_root = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
-        (void)workspace::text_prefill_roots(layout, config, tokens, plan.features.vision ? 3 : 0,
-                                            plan.features.vision ? tokens : 0);
+        (void)workspace::text_prefill_roots(
+            layout, config, tokens,
+            plan.features.vision ? 3 : (plan.rope_scaling_factor != 1.0F ? 1 : 0),
+            plan.features.vision ? tokens : 0);
     };
     const auto linear_scratch = [&](WorkspaceLayoutBuilder& layout,
                                     const execution::LinearParameters& p, int first, int last) {
@@ -737,12 +740,26 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         throw std::invalid_argument(
             "loaded components do not match the requested execution options");
     }
+    if (!std::isfinite(options.rope_scaling_factor) || options.rope_scaling_factor < 1.0F ||
+        options.rope_scaling_factor > 16.0F ||
+        (options.rope_scaling_factor != 1.0F &&
+         options.rope_scaling_original_context >
+             parameters.model.config().text.max_position_embeddings)) {
+        throw std::invalid_argument("invalid RoPE scaling factor or native threshold");
+    }
+    if (options.rope_scaling_factor != 1.0F && parameters.draft) {
+        throw std::invalid_argument(
+            "piecewise RoPE scaling supports ordinary decoding and MTP only");
+    }
+    const double effective_context =
+        std::min(static_cast<double>(parameters.model.config().text.max_position_embeddings) *
+                     options.rope_scaling_factor,
+                 static_cast<double>(ops::kCausalAttentionMaximumVisibleKeys));
     if (parameters.draft &&
         options.max_context > parameters.model.config().draft->max_position_embeddings) {
         throw std::invalid_argument("max_context exceeds the selected draft position capacity");
     }
-    if (options.max_context == 0 ||
-        options.max_context > parameters.model.config().text.max_position_embeddings) {
+    if (options.max_context == 0 || options.max_context > effective_context) {
         throw std::invalid_argument("max_context exceeds the configured position capacity");
     }
     if (options.prefill_chunk == 0 || options.prefill_chunk % kPrefillChunkAlignment != 0) {
@@ -827,6 +844,8 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->use_cuda_graph      = inputs.use_cuda_graph;
     impl->causal_scoring      = inputs.causal_scoring;
     impl->device              = inputs.device;
+    impl->rope_scaling_factor           = inputs.rope_scaling_factor;
+    impl->rope_scaling_original_context = inputs.rope_scaling_original_context;
     impl->context_cache       = inputs.context_cache;
     impl->kv_storage          = inputs.kv_storage;
     impl->persistent          = persistent_layout(*impl);
@@ -886,19 +905,21 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
                            const EngineOptions& options) {
     validate_target_options(parameters, device, options);
     SequencePlanningInputs inputs{
-        .parameters          = &parameters,
-        .capacity            = options.max_context,
-        .max_concurrency     = options.max_concurrency,
-        .prefill_chunk       = std::min(options.prefill_chunk, options.max_context),
-        .draft_window        = options.speculative.draft_tokens,
-        .speculative_backend = options.speculative.backend,
-        .kv_storage          = options.kv_cache,
-        .proposal_head       = options.speculative.proposal_head,
-        .features            = models::load_options(options),
-        .use_cuda_graph      = options.use_cuda_graph,
-        .causal_scoring      = options.purpose == EnginePurpose::CausalScoring,
-        .device              = options.device,
-        .context_cache       = options.context_cache,
+        .parameters                    = &parameters,
+        .capacity                      = options.max_context,
+        .max_concurrency               = options.max_concurrency,
+        .prefill_chunk                 = std::min(options.prefill_chunk, options.max_context),
+        .draft_window                  = options.speculative.draft_tokens,
+        .speculative_backend           = options.speculative.backend,
+        .kv_storage                    = options.kv_cache,
+        .proposal_head                 = options.speculative.proposal_head,
+        .features                      = models::load_options(options),
+        .use_cuda_graph                = options.use_cuda_graph,
+        .causal_scoring                = options.purpose == EnginePurpose::CausalScoring,
+        .device                        = options.device,
+        .rope_scaling_factor           = options.rope_scaling_factor,
+        .rope_scaling_original_context = options.rope_scaling_original_context,
+        .context_cache                 = options.context_cache,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);
     const std::uint32_t minimum_pages = std::max(logical_pages, inputs.max_concurrency);

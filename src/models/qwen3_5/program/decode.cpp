@@ -7,6 +7,7 @@
 #include "ninfer/ops/prepare_ragged_prefix.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/scatter.h"
+#include "ninfer/ops/position.h"
 
 #include <algorithm>
 #include <chrono>
@@ -276,7 +277,8 @@ void ProgramImpl::enqueue_dflash_context_append(std::span<const std::uint32_t> l
 
     execution::DFlashAppendContext state{{device, parameters, work, state_images->linear(),
                                           replay_records ? &*replay_records : nullptr, io,
-                                          prefill_hidden, prefill_chunk, proposal_head},
+                                          prefill_hidden, prefill_chunk, proposal_head,
+                                          rope_scaling_factor, rope_scaling_original_context},
                                          *dflash};
     mark_workspace_usage(workspace_plan.dflash_context);
     execution::dflash_append_context(state, features, positions, device_counts,
@@ -351,8 +353,9 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
             ordinary_host_ingress->tokens[row] = sequence.ledger.back();
             ordinary_host_ingress->cache_positions[row] =
                 checked_i32(frontier, "ordinary batch position");
-            ordinary_host_ingress->rope_positions[row] =
-                checked_i32(frontier, "ordinary batch RoPE position") + sequence.rope_delta;
+            ordinary_host_ingress->rope_positions[row] = ops::scale_rope_position(
+                checked_i32(frontier, "ordinary batch RoPE position") + sequence.rope_delta,
+                rope_scaling_original_context, rope_scaling_factor);
             ordinary_host_ingress->text_kv_table_rows[row] =
                 text_kv_addresses->bound_row(sequence.kv->text);
             const StateImageSelectors selectors                 = state_selectors(sequence);
@@ -365,7 +368,7 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
         execution::OrdinaryBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, rope_scaling_factor, rope_scaling_original_context},
             decoder->text_kv,
             *io.ordinary,
             *ordinary_host_ingress,
@@ -506,8 +509,9 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
             }
             for (std::uint32_t j = 0; j < width; ++j) {
                 const std::uint32_t position = frontier + std::min(j, extent);
-                mtp_host_ingress->target_rope_positions[row * width + j] =
-                    checked_i32(position, "MTP batch RoPE position") + sequence.rope_delta;
+                mtp_host_ingress->target_rope_positions[row * width + j] = ops::scale_rope_position(
+                    checked_i32(position, "MTP batch RoPE position") + sequence.rope_delta,
+                    rope_scaling_original_context, rope_scaling_factor);
             }
             mtp_host_ingress->text_kv_table_rows[row] =
                 text_kv_addresses->bound_row(sequence.kv->text);
@@ -522,15 +526,16 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                                       std::min(capacity, frontier + extent + draft_window));
         }
 
-        execution::MtpBatchContext schedule_state{{device, parameters, work, state_images->linear(),
-                                                   replay_records ? &*replay_records : nullptr, io,
-                                                   prefill_hidden, prefill_chunk, proposal_head},
-                                                  decoder->text_kv,
-                                                  *decoder->mtp_cache(),
-                                                  *io.mtp_decode,
-                                                  *mtp_host_ingress,
-                                                  *mtp_host_egress,
-                                                  state_images->continuation_hidden_store()};
+        execution::MtpBatchContext schedule_state{
+            {device, parameters, work, state_images->linear(),
+             replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
+             proposal_head, rope_scaling_factor, rope_scaling_original_context},
+            decoder->text_kv,
+            *decoder->mtp_cache(),
+            *io.mtp_decode,
+            *mtp_host_ingress,
+            *mtp_host_egress,
+            state_images->continuation_hidden_store()};
 
         mark_workspace_usage(workspace_plan.mtp_round);
         execution::mtp_decode_batch(schedule_state, static_cast<std::int32_t>(lanes.size()),
@@ -701,7 +706,9 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
             for (std::uint32_t column = 0; column < width; ++column) {
                 const std::uint32_t position = frontier + std::min(column, extent);
                 dflash_host_ingress->target_rope_positions[row * width + column] =
-                    checked_i32(position, "DFlash target RoPE position") + sequence.rope_delta;
+                    ops::scale_rope_position(checked_i32(position, "DFlash target RoPE position") +
+                                                 sequence.rope_delta,
+                                             rope_scaling_original_context, rope_scaling_factor);
             }
             dflash_host_ingress->text_kv_table_rows[row] =
                 text_kv_addresses->bound_row(sequence.kv->text);
@@ -719,7 +726,7 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
         execution::DFlashBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, rope_scaling_factor, rope_scaling_original_context},
             decoder->text_kv,
             *dflash,
             *io.dflash_decode,

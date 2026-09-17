@@ -837,6 +837,10 @@ The registered answer preset uses temperature `0.2`, top-p `0.95`, top-k `20`, m
 
 Accepted fields are `temperature` (`0..2`), `top_p` and `min_p` (`0..1`), integer `top_k` (`0..20`), presence/frequency penalties (`-2..2`), and integer `seed`. An omitted seed inherits the resolved initial seed. An explicit seed changes the random key without restarting sequence position. Accepted token history remains available to penalties across the transition. Invalid values return HTTP 400.
 
+### Optional piecewise position scaling
+
+The server accepts `--rope-scaling-factor F` (default `1`, range `1..16`) and `--rope-scaling-original-context N` (default `262144`). These are process-level options, not request fields. The [CLI position-scaling contract](cli.md#optional-piecewise-position-scaling) describes the transform, supported decode backends, native-prefix preservation and quality limitations. Increase `--max-context` and provision `--kv-capacity` separately; scaling does not allocate additional KV capacity by itself.
+
 ### Context-cache capacity
 
 For `C=--max-concurrency` and `H=--device-state-slots`, total Device StateImage capacity is `C+H`:

@@ -773,6 +773,7 @@ void parse_stop(const Json& body, GenerationRequest& output) {
 }
 
 void parse_sampling(const Json& body, GenerationRequest& output) {
+    output.post_thinking_sampling = parse_post_thinking_sampling(body);
     SamplingParams& sampling   = output.sampling;
     sampling.temperature       = get_number(body, "temperature");
     sampling.top_p             = get_number(body, "top_p");

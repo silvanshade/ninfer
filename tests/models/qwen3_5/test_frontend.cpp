@@ -1688,6 +1688,59 @@ ninfer::models::qwen3_5::PreparedPrompt thinking_prompt(const Frontend& frontend
     return frontend.prepare(std::move(input));
 }
 
+int test_sampling_reasoning_boundary(const Frontend& frontend) {
+    int failures = 0;
+    for (const bool raw : {false, true}) {
+        auto prompt  = thinking_prompt(frontend);
+        auto session = frontend.make_output_session(prompt, {}, ninfer::OutputOptions{.raw = raw});
+        const std::array<ninfer::TokenId, 3> round{3, 4, 1};
+        const auto boundary =
+            session.preview_model(round, 20, ninfer::FinishReason::OutputLimit, true);
+        failures += check(boundary.accepted_tokens == 2 && !boundary.finished() &&
+                              boundary.continuation ==
+                                  ninfer::runtime::ContinuationAction::ApplyPostThinkingSampling &&
+                              !boundary.prefix_execution_split_after,
+                          "sampling transition failed to discard a speculative suffix");
+        const auto output = session.commit_preview();
+        failures += check(channel_text(output, ninfer::OutputChannel::Content) ==
+                              (raw ? "thought</think>\n\nanswer" : "answer"),
+                          "speculative suffix leaked into committed output");
+        const auto next = session.preview_model(std::array<ninfer::TokenId, 1>{1}, 18,
+                                                ninfer::FinishReason::OutputLimit, true);
+        failures += check(next.accepted_tokens == 1 &&
+                              next.continuation == ninfer::runtime::ContinuationAction::Decode,
+                          "reasoning closure switched sampling more than once");
+        (void)session.commit_preview();
+        auto first_prompt = thinking_prompt(frontend);
+        auto first_session =
+            frontend.make_output_session(first_prompt, {}, ninfer::OutputOptions{.raw = raw});
+        const auto first_close = first_session.preview_model(
+            std::array<ninfer::TokenId, 2>{248069, 1}, 10, ninfer::FinishReason::OutputLimit, true);
+        failures += check(first_close.accepted_tokens == 1 &&
+                              first_close.continuation ==
+                                  ninfer::runtime::ContinuationAction::ApplyPostThinkingSampling,
+                          "initial generated token failed to hand off the sampling phase");
+        const auto first_output = first_session.commit_preview();
+        failures += check(channel_text(first_output, ninfer::OutputChannel::Content) ==
+                              (raw ? "</think>" : ""),
+                          "initial closure published a token sampled under the old phase");
+    }
+    auto prompt      = thinking_prompt(frontend);
+    auto session     = frontend.make_output_session(prompt, {});
+    const auto first = session.preview_model(std::array<ninfer::TokenId, 1>{3}, 2,
+                                             ninfer::FinishReason::OutputLimit, true);
+    failures += check(first.continuation == ninfer::runtime::ContinuationAction::Decode,
+                      "partial close marker switched sampling prematurely");
+    (void)session.commit_preview();
+    const auto last = session.preview_model(std::array<ninfer::TokenId, 1>{4}, 1,
+                                            ninfer::FinishReason::OutputLimit, true);
+    failures += check(last.finish_reason == ninfer::FinishReason::OutputLimit &&
+                          last.continuation == ninfer::runtime::ContinuationAction::Decode,
+                      "sampling transition displaced terminal budget precedence");
+    (void)session.commit_preview();
+    return failures;
+}
+
 int test_thinking_budget_control(const Frontend& frontend) {
     auto prompt = thinking_prompt(frontend);
     ninfer::StopPolicy stop;
@@ -2192,6 +2245,7 @@ int main() {
     failures += test_terminal_flush(frontend);
     failures += test_structured_tool_output();
     failures += test_reasoning_split(frontend);
+    failures += test_sampling_reasoning_boundary(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
     failures += test_media_cache_reuses_immutable_payload();

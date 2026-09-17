@@ -1107,6 +1107,7 @@ void validate_common_top_level(const Json& body, bool create) {
                                                                   "model",
                                                                   "moderation",
                                                                   "parallel_tool_calls",
+                                                                  "post_thinking",
                                                                   "previous_response_id",
                                                                   "preserve_thinking",
                                                                   "prompt",
@@ -1234,6 +1235,7 @@ OpenAIResponsesCreateRequest parse_openai_responses_create_request(const Json& b
         out.max_tool_calls = *max_tool_calls;
     }
 
+    out.prompt.generation.post_thinking_sampling = parse_post_thinking_sampling(body);
     if (const std::optional<double> temperature = optional_number(body, "temperature")) {
         if (*temperature < 0.0 || *temperature > 2.0) {
             bad_request("temperature must be in [0,2]", "temperature");

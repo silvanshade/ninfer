@@ -36,8 +36,8 @@ std::uint64_t random_seed() {
 }
 
 ninfer::SamplingOverrides resolve_sampling_overrides(const SamplingParams& request,
-                                                     const ServeOptions& server) {
-    ninfer::SamplingOverrides sampling = server.sampling_overrides;
+                                                     ninfer::SamplingOverrides sampling,
+                                                     bool greedy) {
     if (request.temperature) { sampling.temperature = static_cast<float>(*request.temperature); }
     if (request.top_p) { sampling.top_p = static_cast<float>(*request.top_p); }
     if (request.min_p) { sampling.min_p = static_cast<float>(*request.min_p); }
@@ -48,13 +48,7 @@ ninfer::SamplingOverrides resolve_sampling_overrides(const SamplingParams& reque
     if (request.frequency_penalty) {
         sampling.frequency_penalty = static_cast<float>(*request.frequency_penalty);
     }
-    if (request.seed) {
-        sampling.seed = *request.seed;
-    } else if (server.sampling_overrides.seed) {
-        sampling.seed = *server.sampling_overrides.seed;
-    } else {
-        sampling.seed = random_seed();
-    }
+    if (request.seed) { sampling.seed = *request.seed; }
 
     const auto finite = [](const std::optional<float>& value) {
         return !value || std::isfinite(*value);
@@ -83,7 +77,7 @@ ninfer::SamplingOverrides resolve_sampling_overrides(const SamplingParams& reque
         (*sampling.frequency_penalty < -2.0F || *sampling.frequency_penalty > 2.0F)) {
         invalid_sampling("frequency_penalty must be in [-2,2]", "frequency_penalty");
     }
-    if (server.greedy) { sampling.temperature = 0.0F; }
+    if (greedy) { sampling.temperature = 0.0F; }
     return sampling;
 }
 
@@ -319,7 +313,12 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
         options.execution.thinking.budget =
             request.thinking_budget ? request.thinking_budget : server.default_thinking_budget;
     }
-    options.execution.sampling             = resolve_sampling_overrides(request.sampling, server);
+    options.execution.sampling =
+        resolve_sampling_overrides(request.sampling, server.sampling_overrides, server.greedy);
+    if (!options.execution.sampling.seed) { options.execution.sampling.seed = random_seed(); }
+    options.execution.post_thinking_sampling = resolve_sampling_overrides(
+        request.post_thinking_sampling,
+        ninfer::SamplingOverrides{.seed = options.execution.sampling.seed}, server.greedy);
     options.output.raw                     = false;
     options.output.preserve_special_tokens = request.uses_tools() || request.has_tool_history();
     options.output.tool_name_max_length = static_cast<std::uint32_t>(request.tool_name_max_length);

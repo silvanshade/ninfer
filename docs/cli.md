@@ -229,6 +229,10 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--presence-penalty F` | presence-penalty override | registered model/mode default |
 | `--frequency-penalty F` | frequency-penalty override | registered model/mode default (`0`) |
 | `--seed N` | sampling seed | `0` |
+| `--post-thinking-temperature F` | answer-phase temperature override | `0.2` |
+| `--post-thinking-top-p F` | answer-phase nucleus threshold | `0.95` |
+| `--post-thinking-top-k N` | answer-phase top-k threshold (`0..20`) | `20` |
+| `--post-thinking-sampler LIST` | comma-separated `temp`, `top_p`, `top_k`, `min_p`, `presence`, `frequency`, `seed` overrides | registered answer preset |
 
 When a sampling flag is omitted, Engine selects the general-task preset for the loaded architecture
 and rendered prompt mode. The current official models use:
@@ -244,6 +248,12 @@ and rendered prompt mode. The current official models use:
 
 Frequency penalty is `0` in every registered preset. Task-specific profiles such as Qwen's
 precise-coding profile use explicit sampling overrides.
+
+Thinking requests switch to the answer preset immediately after `</think>`, including a closure forced by the thinking budget. Tokens speculated beyond that boundary are discarded and sampled again with the answer preset. Raw output uses the same transition. Non-thinking requests retain their initial sampler.
+
+The answer preset uses temperature `0.2`, top-p `0.95`, top-k `20`, min-p `0`, and zero presence/frequency penalties. Initial sampling overrides do not replace this preset. An omitted answer seed inherits the initial seed; an explicit seed changes the random key without restarting the sequence position. Penalties retain accepted token history across the transition.
+
+Later answer flags override earlier values. `--greedy` forces temperature `0` in both phases regardless of flag order. For example, `--post-thinking-sampler temp=0.2,top_p=0.95,frequency=0.2` changes answer sampling while retaining the registered thinking preset.
 
 Repeat `--stop-token-id`, `--stop`, or `--reasoning-stop` to add stop conditions. Use
 `--raw-output` to expose the frontend's raw output stream and `--print-token-ids` to include

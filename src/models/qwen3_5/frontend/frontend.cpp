@@ -561,6 +561,7 @@ ModelSamplingDefaults default_sampling(Architecture architecture) {
                              .min_p             = 0.0F,
                              .presence_penalty  = 1.5F,
                              .frequency_penalty = 0.0F};
+    sampling.post_thinking = SamplingPreset{.temperature = 0.2F, .top_k = 20, .top_p = 0.95F};
     return sampling;
 }
 

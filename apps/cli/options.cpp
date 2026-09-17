@@ -77,6 +77,54 @@ ReasoningEffort parse_reasoning_effort(std::string_view text) {
     throw std::invalid_argument("invalid reasoning-effort: " + std::string(text));
 }
 
+/// Parse comma-separated post-thinking sampler overrides.
+/// # Specification
+/// - ensures: each supplied field is range-checked; later occurrences override earlier ones.
+/// - fails: invalid_argument for empty/malformed fields, unknown keys or invalid values.
+/// - panics: none.
+/// # Adequacy
+/// - hypothesis: mixed forms, explicit zero and greedy precedence expose override errors.
+/// - witness: tests/test_cli_options.cpp::main.
+void parse_post_thinking_sampler(std::string_view text, SamplingOverrides& sampling) {
+    if (text.empty()) { throw std::invalid_argument("post-thinking sampler must not be empty"); }
+    while (!text.empty()) {
+        const std::size_t comma      = text.find(',');
+        const std::string_view field = text.substr(0, comma);
+        const std::size_t equal      = field.find('=');
+        if (equal == std::string_view::npos || equal == 0 || equal + 1 == field.size()) {
+            throw std::invalid_argument("post-thinking sampler requires key=value fields");
+        }
+        const std::string_view key = field.substr(0, equal);
+        const std::string value(field.substr(equal + 1));
+        if (key == "temp") {
+            sampling.temperature = parse_float(value.c_str(), key, 0.0F, 2.0F);
+        } else if (key == "top_p") {
+            sampling.top_p = parse_float(value.c_str(), key, 0.0F, 1.0F);
+        } else if (key == "min_p") {
+            sampling.min_p = parse_float(value.c_str(), key, 0.0F, 1.0F);
+        } else if (key == "presence") {
+            sampling.presence_penalty = parse_float(value.c_str(), key, -2.0F, 2.0F);
+        } else if (key == "frequency") {
+            sampling.frequency_penalty = parse_float(value.c_str(), key, -2.0F, 2.0F);
+        } else if (key == "seed") {
+            sampling.seed = parse_u64(value.c_str(), key);
+        } else if (key == "top_k") {
+            const auto top_k = parse_u32(value.c_str(), key, true);
+            if (top_k > 20) {
+                throw std::invalid_argument("post-thinking top_k must be in [0,20]");
+            }
+            sampling.top_k = static_cast<std::int32_t>(top_k);
+        } else {
+            throw std::invalid_argument("unknown post-thinking sampler key: " + std::string(key));
+        }
+        if (comma == std::string_view::npos) { break; }
+        text.remove_prefix(comma + 1);
+        if (text.empty()) {
+            throw std::invalid_argument("post-thinking sampler has an empty field");
+        }
+    }
+}
+
 } // namespace
 
 std::string usage_text(const char* argv0) {
@@ -89,6 +137,10 @@ std::string usage_text(const char* argv0) {
            "       [--lm-head-draft]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
+           "       [--post-thinking-temperature F] [--post-thinking-top-p F] "
+           "[--post-thinking-top-k N]\n"
+           "       [--post-thinking-sampler "
+           "temp=F,top_p=F,top_k=N,min_p=F,presence=F,frequency=F,seed=N]\n"
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
            "       [--chat-template FILE]\n"
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
@@ -180,6 +232,18 @@ Options parse_options(int argc, char** argv) {
                 .text    = std::move(text),
                 .channel = arg == "--stop" ? OutputChannel::Content : OutputChannel::Reasoning,
             });
+        } else if (arg == "--post-thinking-temperature") {
+            options.post_thinking_sampling.temperature = parse_float(value(arg), arg, 0.0F, 2.0F);
+        } else if (arg == "--post-thinking-top-p") {
+            options.post_thinking_sampling.top_p = parse_float(value(arg), arg, 0.0F, 1.0F);
+        } else if (arg == "--post-thinking-top-k") {
+            const auto top_k = parse_u32(value(arg), arg, true);
+            if (top_k > 20) {
+                throw std::invalid_argument("post-thinking top_k must be in [0,20]");
+            }
+            options.post_thinking_sampling.top_k = static_cast<std::int32_t>(top_k);
+        } else if (arg == "--post-thinking-sampler") {
+            parse_post_thinking_sampler(value(arg), options.post_thinking_sampling);
         } else if (arg == "--temperature") {
             options.sampling.temperature = parse_float(value(arg), "temperature", 0.0F, 2.0F);
         } else if (arg == "--top-p") {
@@ -232,7 +296,10 @@ Options parse_options(int argc, char** argv) {
     if (options.enable_thinking == false && options.thinking_budget) {
         throw std::invalid_argument("--thinking-budget cannot be combined with --no-thinking");
     }
-    if (options.greedy) { options.sampling.temperature = 0.0F; }
+    if (options.greedy) {
+        options.sampling.temperature               = 0.0F;
+        options.post_thinking_sampling.temperature = 0.0F;
+    }
     return options;
 }
 

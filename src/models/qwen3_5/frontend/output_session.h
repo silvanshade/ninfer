@@ -64,7 +64,8 @@ public:
 
     [[nodiscard]] runtime::OutputDecision preview_model(std::span<const TokenId> tokens,
                                                         std::uint32_t total_budget_remaining,
-                                                        FinishReason limit_reason);
+                                                        FinishReason limit_reason,
+                                                        bool yield_on_reasoning_close = false);
     [[nodiscard]] std::uint32_t
     model_token_budget_remaining(std::uint32_t total_budget_remaining) const noexcept;
     [[nodiscard]] std::span<const TokenId> pending_control_tokens() const noexcept;

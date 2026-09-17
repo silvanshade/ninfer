@@ -600,7 +600,7 @@ int increment_counts_contract() {
     device_counts.copy_from_host(initial.data(), initial.size() * sizeof(std::int32_t));
     Tensor token_ids(device_ids.p, DType::I32, {static_cast<std::int32_t>(ids.size())});
     Tensor counts(device_counts.data(), DType::I32, {static_cast<std::int32_t>(initial.size())});
-    ops::increment_token_counts(token_ids, counts, nullptr);
+    ops::adjust_token_counts(token_ids, counts, 1, nullptr);
     cuda_synchronize();
 
     int failures =
@@ -609,6 +609,19 @@ int increment_counts_contract() {
     failures += verify_exact("increment token counts read-only ids",
                              from_device<std::int32_t>(device_ids, ids.size()), ids);
     failures += device_counts.verify_guards("increment token counts guards");
+    // Remove only the uncommitted suffix, including an ID also present in the retained prefix.
+    Tensor suffix = token_ids.slice(0, 1, 3);
+    ops::adjust_token_counts(suffix, counts, -1, nullptr);
+    cuda_synchronize();
+    failures += verify_exact("rollback preserves prior counts and accepted prefix",
+                             from_device<std::int32_t>(device_counts.data(), initial.size()),
+                             std::vector<std::int32_t>{0, 3, 0, 4, 0, 0, 0, 1});
+    failures += device_counts.verify_guards("rollback token counts guards");
+    try {
+        ops::adjust_token_counts(token_ids, counts, 0, nullptr);
+        std::cerr << "token-count adjustment accepted a zero delta\n";
+        ++failures;
+    } catch (const std::invalid_argument&) {}
     return failures;
 }
 

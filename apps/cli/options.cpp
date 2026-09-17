@@ -145,6 +145,7 @@ std::string usage_text(const char* argv0) {
            "       [--chat-template FILE]\n"
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
            "       [--reasoning-effort none|minimal|low|medium|high|xhigh|max] [--vision]\n"
+           "       [--rope-scaling-factor F] [--rope-scaling-original-context N]\n"
            "       [--no-cuda-graph]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "\n"
@@ -215,6 +216,12 @@ Options parse_options(int argc, char** argv) {
             options.reasoning_effort = parse_reasoning_effort(value(arg));
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--rope-scaling-factor") {
+            options.rope_scaling_factor =
+                parse_float(value(arg), "rope-scaling-factor", 1.0F, 16.0F);
+        } else if (arg == "--rope-scaling-original-context") {
+            options.rope_scaling_original_context =
+                parse_u32(value(arg), "rope-scaling-original-context", true);
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--stop-token-id") {

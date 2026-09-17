@@ -2,6 +2,7 @@
 #include "ninfer/ops/position.h"
 #include "ops/op_tester.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -132,6 +133,33 @@ int lane_offset_case(int width, int batch, int axes, bool in_place) {
     return failures;
 }
 
+int piecewise_case(float factor) {
+    constexpr std::uint32_t native = 262144;
+    constexpr std::int32_t count   = 638851;
+    std::vector<std::int32_t> positions(count), expected(count), host(count);
+    for (std::int32_t i = 0; i < count; ++i) {
+        const std::int32_t position = i - 2;
+        positions[i]                = position;
+        expected[i] =
+            position <= static_cast<std::int32_t>(native)
+                ? position
+                : static_cast<std::int32_t>(
+                      native +
+                      std::floor(static_cast<long double>(position - native) / factor + 0.5L));
+        host[i] = ops::scale_rope_position(position, native, factor);
+    }
+    GuardedDeviceBuffer output(positions.size() * sizeof(std::int32_t));
+    CUDA_CHECK(cudaMemcpy(output.data(), positions.data(), output.bytes(), cudaMemcpyHostToDevice));
+    Tensor tensor(output.data(), DType::I32, {count});
+    ops::scale_rope_positions(tensor, native, factor, nullptr);
+    cuda_synchronize();
+    int failures = verify_exact("piecewise host positions", host, expected);
+    failures += verify_exact("piecewise GPU positions",
+                             from_device<std::int32_t>(output.data(), expected.size()), expected);
+    failures += output.verify_guards("piecewise positions");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -146,6 +174,9 @@ int main() {
             for (int axes : {1, 3})
                 for (bool in_place : {false, true})
                     failures += lane_offset_case(width, batch, axes, in_place);
+    failures += piecewise_case(1.0F);
+    failures += piecewise_case(2.0F);
+    failures += piecewise_case(2.4371F);
     failures += fill_case(1, 0);
     failures += fill_case(6, 262144);
     failures += fill_case(1024, 131072);

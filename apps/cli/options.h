@@ -29,6 +29,8 @@ struct Options {
     SpeculativeOptions speculative;
     bool enable_vision  = false;
     bool use_cuda_graph = true;
+    float rope_scaling_factor                   = 1.0F;
+    std::uint32_t rope_scaling_original_context = 262144;
 
     bool raw_output      = false;
     bool print_token_ids = false;

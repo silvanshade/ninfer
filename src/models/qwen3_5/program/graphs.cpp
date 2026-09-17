@@ -4,6 +4,7 @@
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "core/nvtx.h"
 #include "core/device.h"
+#include "ninfer/ops/position.h"
 
 #include <algorithm>
 #include <array>
@@ -232,8 +233,10 @@ void ProgramImpl::prepare_graphs() {
                     static_cast<std::int32_t>(extent + 1U);
                 for (std::uint32_t column = 0; column < width; ++column) {
                     dflash_host_ingress->target_rope_positions[row * width + column] =
-                        checked_i32(frontier + std::min(column, extent),
-                                    "graph representative DFlash target RoPE position");
+                        ops::scale_rope_position(
+                            checked_i32(frontier + std::min(column, extent),
+                                        "graph representative DFlash target RoPE position"),
+                            rope_scaling_original_context, rope_scaling_factor);
                 }
                 dflash_host_ingress->text_kv_table_rows[row]      = static_cast<std::int32_t>(row);
                 dflash_host_ingress->dflash_kv_table_rows[row]    = static_cast<std::int32_t>(row);
@@ -262,8 +265,10 @@ void ProgramImpl::prepare_graphs() {
                 }
                 for (std::uint32_t column = 0; column < width; ++column) {
                     mtp_host_ingress->target_rope_positions[row * width + column] =
-                        checked_i32(frontier + std::min(column, extent),
-                                    "graph representative MTP RoPE position");
+                        ops::scale_rope_position(
+                            checked_i32(frontier + std::min(column, extent),
+                                        "graph representative MTP RoPE position"),
+                            rope_scaling_original_context, rope_scaling_factor);
                 }
                 mtp_host_ingress->text_kv_table_rows[row]      = static_cast<std::int32_t>(row);
                 mtp_host_ingress->mtp_kv_table_rows[row]       = static_cast<std::int32_t>(row);
@@ -280,8 +285,9 @@ void ProgramImpl::prepare_graphs() {
                 ordinary_host_ingress->tokens[row] = 0;
                 ordinary_host_ingress->cache_positions[row] =
                     checked_i32(frontier, "graph representative ordinary position");
-                ordinary_host_ingress->rope_positions[row] =
-                    checked_i32(frontier, "graph representative ordinary RoPE position");
+                ordinary_host_ingress->rope_positions[row] = ops::scale_rope_position(
+                    checked_i32(frontier, "graph representative ordinary RoPE position"),
+                    rope_scaling_original_context, rope_scaling_factor);
                 ordinary_host_ingress->text_kv_table_rows[row] = static_cast<std::int32_t>(row);
                 ordinary_host_ingress->state_source_slots[row] = capture_state_slot(row);
                 ordinary_host_ingress->state_destination_slots[row] = capture_state_slot(row);
@@ -298,7 +304,9 @@ void ProgramImpl::prepare_graphs() {
                                         io,
                                         prefill_hidden,
                                         prefill_chunk,
-                                        proposal_head};
+                                        proposal_head,
+                                        rope_scaling_factor,
+                                        rope_scaling_original_context};
     };
 
     if (speculative_backend == SpeculativeBackend::None) {

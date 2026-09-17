@@ -51,4 +51,22 @@ void fill_i32_positions(Tensor& positions, std::int32_t start, cudaStream_t stre
 void offset_i32_positions(const Tensor& source, const Tensor& delta, Tensor& destination,
                           cudaStream_t stream);
 
+/** Piecewise integer position transform. Native positions are unchanged; beyond the threshold,
+ * round the scaled excess to nearest, with positive half ties rounded up. Requires finite
+ * factor >= 1 and a nonnegative original_context. Logical KV and RNG positions are not scaled. */
+__host__ __device__ inline std::int32_t
+scale_rope_position(std::int32_t position, std::uint32_t original_context, float factor) {
+    if (factor == 1.0F || position <= static_cast<std::int32_t>(original_context)) return position;
+    return static_cast<std::int32_t>(original_context) +
+           static_cast<std::int32_t>(
+               static_cast<double>(position - static_cast<std::int32_t>(original_context)) /
+                   factor +
+               0.5);
+}
+
+/** Applies scale_rope_position in place to a nonempty contiguous I32 vector.
+ * No workspace or other state effects. Invalid factor/threshold/shape throws invalid_argument. */
+void scale_rope_positions(Tensor& positions, std::uint32_t original_context, float factor,
+                          cudaStream_t stream);
+
 } // namespace ninfer::ops

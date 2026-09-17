@@ -68,6 +68,7 @@ std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
            "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
+           "[--rope-scaling-factor F] [--rope-scaling-original-context N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--context-cost-presets FILE] "
@@ -262,6 +263,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_dtype(require_value("--kv-dtype"));
+        } else if (arg == "--rope-scaling-factor") {
+            options.rope_scaling_factor = parse_float_in(require_value("--rope-scaling-factor"),
+                                                         "rope-scaling-factor", 1.0F, 16.0F);
+        } else if (arg == "--rope-scaling-original-context") {
+            options.rope_scaling_original_context = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--rope-scaling-original-context"),
+                                      "rope-scaling-original-context"));
         } else if (arg == "--spec") {
             options.speculative.backend =
                 product::parse_speculative_backend(require_value("--spec"));

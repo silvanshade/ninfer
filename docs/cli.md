@@ -208,6 +208,8 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 |---|---|---:|
 | `--max-context N` | per-sequence logical context ceiling | `2048` |
 | `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `2048` |
+| `--rope-scaling-factor F` | piecewise RoPE position compression factor (`1..16`; `1` disables it) | `1` |
+| `--rope-scaling-original-context N` | uncompressed position threshold (must not exceed the model native context when enabled) | `262144` |
 | `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
@@ -276,6 +278,16 @@ and CUDA Graph allowance, while leaving the default 1 GiB automatic headroom
 unallocated. It does not probe allocations or resize the pool at request time. The single-request
 CLI normally leaves the option omitted so it follows
 `--max-context`; the distinction matters primarily to a concurrent Engine or server.
+
+### Optional piecewise position scaling
+
+`--rope-scaling-factor 2.4371 --rope-scaling-original-context 262144 --max-context 638848` enables the fork-style long-context position transform. For logical RoPE coordinate `p`, threshold `N`, and factor `f`, the transform is `p` through `N`, then `N + floor((p - N) / f + 0.5)`. The native prefix is unchanged; extended positions can collide. This is integer coordinate compression, not the paper YaRN frequency interpolation or attention-temperature algorithm.
+
+The transform applies consistently to text prefill, all three multimodal axes, ordinary decode, MTP verification/proposals and CUDA graphs. KV addresses, attention visibility and sampler RNG positions remain logical and uncompressed. Scaling is fixed for an Engine lifetime. The configured context ceiling is bounded by the native model context times the factor and the attention implementation limit; physical KV capacity and memory remain independent constraints.
+
+Only ordinary decoding and MTP support this option. Combining enabled scaling with DFlash or DFlash2 is rejected at startup. The larger admitted ceiling is not a guarantee of long-context answer quality.
+
+### Runtime memory
 
 At Engine startup NInfer reserves model weights, persistent sequence state, one phase-reused
 Program workspace, and a separate CUDA Graph driver allowance. With Vision enabled, that one

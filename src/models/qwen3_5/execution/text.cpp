@@ -622,6 +622,8 @@ void TextContext::mtp_forward_batch(const Tensor& ids, const Tensor& hidden,
     if (rope_positions == nullptr) {
         generated_rope_positions = work_.alloc(DType::I32, {T});
         ops::offset_i32_positions(positions, io_.rope_delta, generated_rope_positions, ctx_.stream);
+        ops::scale_rope_positions(generated_rope_positions, rope_scaling_original_context_,
+                                  rope_scaling_factor_, ctx_.stream);
         rope_positions = &generated_rope_positions;
     } else if (rope_positions->dtype != DType::I32 || rope_positions->ne[0] != T ||
                (rope_positions->ne[1] != 1 && rope_positions->ne[1] != 3) ||
@@ -1211,7 +1213,9 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                 }
             }
 
-            const std::int32_t rope_axes = multimodal != nullptr ? 3 : (rope_delta_ != 0 ? 1 : 0);
+            const std::int32_t rope_axes =
+                multimodal != nullptr ? 3
+                                      : (rope_delta_ != 0 || rope_scaling_factor_ != 1.0F ? 1 : 0);
             const auto roots             = workspace::text_prefill_roots(
                 work_, config_, len, rope_axes,
                 static_cast<std::int32_t>(local_scatter_indices.size()));
@@ -1234,9 +1238,15 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                                 rope_positions_host.data() + static_cast<std::size_t>(axis) * len);
                 }
                 copy_i32(rope_positions_host.data(), rope_positions, s);
-            } else if (rope_delta_ != 0) {
+            } else if (rope_delta_ != 0 || rope_scaling_factor_ != 1.0F) {
                 rope_positions = roots.rope_positions;
                 ops::offset_i32_positions(positions, io_.rope_delta, rope_positions, s);
+            }
+            if (rope_scaling_factor_ != 1.0F) {
+                Tensor flat_rope =
+                    rope_positions.view({rope_positions.ne[0] * rope_positions.ne[1]});
+                ops::scale_rope_positions(flat_rope, rope_scaling_original_context_,
+                                          rope_scaling_factor_, s);
             }
             ScopedPositions scoped_cache(active_cache_positions_, positions);
             ScopedPositions scoped_rope(active_rope_positions_, rope_positions);
@@ -1272,7 +1282,11 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                 // the sampler RNG is keyed by it (prefill purpose keeps it distinct from the first
                 // decode step, which reuses the same io_.pos).
                 ops::set_i32_scalar(io_.pos, base_i + T, s);
-                ops::set_i32_scalar(io_.rope_pos, base_i + T + rope_delta_, s);
+                ops::set_i32_scalar(io_.rope_pos,
+                                    ops::scale_rope_position(base_i + T + rope_delta_,
+                                                             rope_scaling_original_context_,
+                                                             rope_scaling_factor_),
+                                    s);
                 if (sampling_config_ != nullptr) {
                     ops::sample(logits, io_.token,
                                 dimension(parameters_.model.resources().public_token_count),

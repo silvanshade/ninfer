@@ -14,4 +14,7 @@ void offset_i32_positions_launch(const Tensor& source, const Tensor& delta, Tens
 void offset_i32_positions_block_launch(const Tensor& source, const Tensor& delta,
                                        Tensor& destination, int block, cudaStream_t stream);
 
+void scale_rope_positions_launch(Tensor& positions, std::uint32_t original_context, float factor,
+                                 cudaStream_t stream);
+
 } // namespace ninfer::ops::detail

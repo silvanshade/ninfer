@@ -28,12 +28,14 @@ void offset_i32_positions_block_launch(const Tensor& source, const Tensor& delta
     CUDA_CHECK(cudaGetLastError());
 }
 
-void scale_rope_positions_launch(Tensor& positions, std::uint32_t original_context, float factor,
+void scale_rope_positions_launch(const Tensor& source, Tensor& destination,
+                                 std::uint32_t original_context, float factor,
                                  cudaStream_t stream) {
     constexpr int block = 256;
-    const int grid      = div_up(positions.ne[0], block);
+    const int grid      = div_up(destination.ne[0], block);
     scale_rope_positions_kernel<<<grid, block, 0, stream>>>(
-        static_cast<std::int32_t*>(positions.data), positions.ne[0], original_context, factor);
+        static_cast<const std::int32_t*>(source.data), static_cast<std::int32_t*>(destination.data),
+        destination.ne[0], original_context, factor);
     CUDA_CHECK(cudaGetLastError());
 }
 

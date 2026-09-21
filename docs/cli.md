@@ -303,7 +303,7 @@ Because positions through `N` are unchanged, a request that stays within the nat
 
 The transform applies consistently to text prefill, all three multimodal axes, ordinary decode, MTP verification/proposals and CUDA graphs. KV addresses, attention visibility and sampler RNG positions remain logical and uncompressed. Scaling is fixed for an Engine lifetime. The configured context ceiling is bounded by the native model context times the factor and the attention implementation limit; physical KV capacity and memory remain independent constraints.
 
-Only ordinary decoding and MTP support this option. Combining enabled scaling with DFlash or DFlash2 is rejected at startup. The larger admitted ceiling is not a guarantee of long-context answer quality.
+Ordinary decoding, MTP, DFlash and DFlash2 support this option. A draft's sliding-window layers keep native positions, because their RoPE offsets are relative within the window; its global-attention layers take the target's map. The larger admitted ceiling is not a guarantee of long-context answer quality.
 
 ### Runtime memory
 

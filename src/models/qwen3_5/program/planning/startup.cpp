@@ -16,6 +16,7 @@
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
 #include "ninfer/ops/linear_add.h"
+#include "ninfer/ops/position.h"
 #include "ninfer/ops/linear_swiglu.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/sliding_window_attention.h"
@@ -747,18 +748,14 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
              parameters.model.config().text.max_position_embeddings)) {
         throw std::invalid_argument("invalid RoPE scaling factor or native threshold");
     }
-    if (options.rope_scaling_factor != 1.0F && parameters.draft) {
-        throw std::invalid_argument(
-            "piecewise RoPE scaling supports ordinary decoding and MTP only");
-    }
     const double effective_context =
         std::min(static_cast<double>(parameters.model.config().text.max_position_embeddings) *
                      options.rope_scaling_factor,
                  static_cast<double>(ops::kCausalAttentionMaximumVisibleKeys));
-    if (parameters.draft &&
-        options.max_context > parameters.model.config().draft->max_position_embeddings) {
-        throw std::invalid_argument("max_context exceeds the selected draft position capacity");
-    }
+    // No separate draft position guard. The drafter attends at the target's scaled positions, so
+    // the window it sees is bounded by the same effective_context check below; past the draft's
+    // own training range the cost is acceptance, which the verifier measures and which never
+    // affects correctness, because every drafted token is still verified against the target.
     if (options.max_context == 0 || options.max_context > effective_context) {
         throw std::invalid_argument("max_context exceeds the configured position capacity");
     }

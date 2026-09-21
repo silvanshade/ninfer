@@ -51,13 +51,23 @@ void offset_i32_positions(const Tensor& source, const Tensor& delta, Tensor& des
 
 void scale_rope_positions(Tensor& positions, std::uint32_t original_context, float factor,
                           cudaStream_t stream) {
-    require_i32_vector(positions, "scale_rope_positions positions");
+    scale_rope_positions_into(positions, positions, original_context, factor, stream);
+}
+
+void scale_rope_positions_into(const Tensor& source, Tensor& destination,
+                               std::uint32_t original_context, float factor,
+                               cudaStream_t stream) {
+    require_i32_vector(source, "scale_rope_positions source");
+    require_i32_vector(destination, "scale_rope_positions destination");
+    if (source.ne[0] != destination.ne[0]) {
+        throw std::invalid_argument("scale_rope_positions: source and destination shapes differ");
+    }
     if (!std::isfinite(factor) || factor < 1.0F ||
         original_context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::invalid_argument("scale_rope_positions: invalid factor or threshold");
     }
-    if (factor != 1.0F)
-        detail::scale_rope_positions_launch(positions, original_context, factor, stream);
+    if (factor != 1.0F || source.data != destination.data)
+        detail::scale_rope_positions_launch(source, destination, original_context, factor, stream);
 }
 
 } // namespace ninfer::ops

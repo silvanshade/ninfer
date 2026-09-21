@@ -69,4 +69,11 @@ scale_rope_position(std::int32_t position, std::uint32_t original_context, float
 void scale_rope_positions(Tensor& positions, std::uint32_t original_context, float factor,
                           cudaStream_t stream);
 
+/** Out-of-place form: destination[i] = scale_rope_position(source[i], ...), for a drafter that
+ * attends at scaled positions while its cache, masks and slots keep the logical ones. Source and
+ * destination are nonempty contiguous I32 vectors of equal length and may alias. A unit factor
+ * still copies when they do not alias. Invalid factor/threshold/shape throws invalid_argument. */
+void scale_rope_positions_into(const Tensor& source, Tensor& destination,
+                               std::uint32_t original_context, float factor, cudaStream_t stream);
+
 } // namespace ninfer::ops

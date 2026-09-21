@@ -17,6 +17,7 @@
 #include "ninfer/ops/embedding.h"
 #include "ninfer/ops/kv_cache_append.h"
 #include "ninfer/ops/linear.h"
+#include "ninfer/ops/position.h"
 #include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_pair.h"
 #include "ninfer/ops/linear_swiglu.h"
@@ -284,6 +285,12 @@ void propose_dflash2_batch(DFlashBatchContext& state, qwen3_5::DFlashDecodeState
         work.reset();
         ops::prepare_masked_block(anchors, frontiers, valid_columns,
                                   dimension(config.mask_token_id), ids, positions, stream);
+        // Positions stay native here. Every DFlash2 layer is sliding attention over a 2,048-token
+        // window, and its RoPE is relative: what the draft trained on is the offset between two
+        // tokens inside that window, not the absolute coordinate. Compressing the coordinates by
+        // the target's piecewise factor would shrink those in-window offsets past the native
+        // threshold and present a geometry the draft has never seen. An absolute position beyond
+        // 262,144 inside a 2,048-token window is fine; a compressed offset is not.
         Tensor residual = work.alloc(DType::BF16, {dimension(target.hidden_size), width, batch});
         Tensor flat_residual = residual.view({dimension(target.hidden_size), columns});
         ops::embedding(ids.view({columns}), state.execution.parameters.text.token_embedding,
@@ -410,6 +417,20 @@ void propose_batch_impl(DFlashBatchContext& state, qwen3_5::DFlashDecodeState& f
         ops::prepare_masked_block(anchors, frontiers, valid_columns,
                                   dimension(config.mask_token_id), ids, positions,
                                   state.execution.device.stream);
+        // A DFlash v1 draft may carry global-attention layers. Those read the target's absolute
+        // coordinates, so they take the target's piecewise map; the sliding layers keep native
+        // positions, because their RoPE is relative and a compressed in-window offset is a
+        // geometry no draft trained on. The cache, the masks and the slots are logical throughout.
+        Tensor rope_positions = positions;
+        if (state.execution.rope_scaling_factor != 1.0F && config.full_layer_count() != 0) {
+            rope_positions      = state.execution.work.alloc(DType::I32, {width, batch_size});
+            Tensor flat_logical = positions.view({columns});
+            Tensor flat_scaled  = rope_positions.view({columns});
+            ops::scale_rope_positions_into(flat_logical, flat_scaled,
+                                           state.execution.rope_scaling_original_context,
+                                           state.execution.rope_scaling_factor,
+                                           state.execution.device.stream);
+        }
         Tensor residual =
             state.execution.work.alloc(DType::BF16, {dimension(target.hidden_size), columns});
         ops::embedding(ids.view({columns}), state.execution.parameters.text.token_embedding,
@@ -454,7 +475,11 @@ void propose_batch_impl(DFlashBatchContext& state, qwen3_5::DFlashDecodeState& f
                              state.execution.device.stream);
                 ops::rmsnorm(key_raw, weight.key_norm, config.rms_norm_eps, false, key,
                              state.execution.device.stream);
-                ops::rope(positions.view({columns}), dimension(config.attention.head_dim),
+                const Tensor& layer_rope =
+                    config.layer_types[layer] == DraftAttentionKind::SlidingAttention
+                        ? positions
+                        : rope_positions;
+                ops::rope(layer_rope.view({columns}), dimension(config.attention.head_dim),
                           config.rope_theta, query, key, state.execution.device.stream);
                 Tensor query_batch = query.view({dimension(config.attention.head_dim),
                                                  dimension(config.attention.num_attention_heads),

@@ -9,7 +9,7 @@ from __future__ import annotations
 import torch
 
 from .codecs.direct import encode_direct
-from .codecs.exl3 import encode_exl3_tile
+from .codecs.exl3 import trellis_band_bytes
 from .codecs.fp8_row import encode_fp8_row_scaled
 from .codecs.nvfp4 import encode_nvfp4
 from .codecs.row_split import encode_row_split, split_row_planes
@@ -157,19 +157,11 @@ class TensorOutput:
         if row_begin % 16 or rows <= 0 or row_begin + rows > g.n:
             raise ValueError(f"{obj.id}: trellis output needs whole 16-row tile bands")
         self._padding()
-        band = encode_exl3_tile(
-            tiles, suh, svh, (rows, g.k), self.format
+        codes, input_vector, output_vector = trellis_band_bytes(
+            tiles, suh, svh, rows, g.k, self.format
         )
-        local = exl3_tile_geometry(self.format, (rows, g.k))
-        block = memoryview(band)
-        self.write_bytes(
-            row_begin * g.code_row_bytes, block[: local.code_plane_bytes]
-        )
-        self.write_bytes(
-            g.svh_offset + row_begin * 2,
-            block[local.svh_offset : local.svh_offset + local.svh_bytes],
-        )
-        input_vector = bytes(block[local.suh_offset : local.suh_offset + local.suh_bytes])
+        self.write_bytes(row_begin * g.code_row_bytes, codes)
+        self.write_bytes(g.svh_offset + row_begin * 2, output_vector)
         if self._input_vector is None:
             self.write_bytes(g.suh_offset, input_vector)
             self._input_vector = input_vector

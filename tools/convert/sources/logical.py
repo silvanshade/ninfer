@@ -18,6 +18,16 @@ class EncodedRows:
 
 
 @dataclass(frozen=True, slots=True)
+class TrellisRows:
+    """Whole 16-row tile bands: the tiles, their svh words, and the parent's whole suh."""
+
+    format: str
+    tiles: torch.Tensor
+    suh: torch.Tensor
+    svh: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
 class LogicalSource:
     """Values use flat C-order elements; an optional encoded reader uses full rows."""
 
@@ -27,6 +37,7 @@ class LogicalSource:
     read_encoded: Callable[[int, int], EncodedRows] | None = None
     weight_divisor: Callable[[], bytes] | None = None
     input_divisor: Callable[[], bytes] | None = None
+    read_trellis: Callable[[int, int], TrellisRows] | None = None
 
     def values(self, begin: int = 0, end: int | None = None) -> torch.Tensor:
         end = prod(self.shape) if end is None else end

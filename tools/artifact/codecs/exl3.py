@@ -70,6 +70,33 @@ def _exact_half_vector(vector: torch.Tensor, length: int, label: str) -> torch.T
     return vector.detach().contiguous().cpu()
 
 
+def trellis_band_bytes(
+    tiles: torch.Tensor,
+    suh: torch.Tensor,
+    svh: torch.Tensor,
+    rows: int,
+    k: int,
+    format: str | Exl3Format,
+) -> tuple[bytes, bytes, bytes]:
+    """Validate and serialize one band's three planes: codes, `suh` over K, `svh` over the band.
+
+    A band is any whole number of tile rows. Only the parent matrix has to be rotatable, so this
+    checks the tiling rather than the 128-element blocking.
+    """
+
+    spec = _format(format)
+    if rows <= 0 or rows % TILE or k <= 0 or k % TILE:
+        raise ValueError("a trellis band is a positive whole number of 16x16 tiles")
+    words = _exact_tile_words(tiles, rows, k, spec.bits, "trellis tiles")
+    input_vector = _exact_half_vector(suh, k, "trellis suh")
+    output_vector = _exact_half_vector(svh, rows, "trellis svh")
+    return (
+        words.numpy().tobytes(),
+        input_vector.numpy().tobytes(),
+        output_vector.numpy().tobytes(),
+    )
+
+
 def encode_exl3_tile(
     tiles: torch.Tensor,
     suh: torch.Tensor,
@@ -81,16 +108,16 @@ def encode_exl3_tile(
 
     spec = _format(format)
     geometry = exl3_tile_geometry(spec, shape)
-    words = _exact_tile_words(tiles, geometry.n, geometry.k, spec.bits, "trellis tiles")
-    input_vector = _exact_half_vector(suh, geometry.k, "trellis suh")
-    output_vector = _exact_half_vector(svh, geometry.n, "trellis svh")
+    codes, input_vector, output_vector = trellis_band_bytes(
+        tiles, suh, svh, geometry.n, geometry.k, spec
+    )
     payload = bytearray(geometry.payload_bytes)
-    payload[: geometry.code_plane_bytes] = words.numpy().tobytes()
+    payload[: geometry.code_plane_bytes] = codes
     payload[geometry.suh_offset : geometry.suh_offset + geometry.suh_bytes] = (
-        input_vector.numpy().tobytes()
+        input_vector
     )
     payload[geometry.svh_offset : geometry.svh_offset + geometry.svh_bytes] = (
-        output_vector.numpy().tobytes()
+        output_vector
     )
     return bytes(payload)
 

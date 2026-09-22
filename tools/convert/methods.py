@@ -17,6 +17,7 @@ import torch
 
 from tools.artifact.formats import (
     DirectFormat,
+    Exl3Format,
     QuantFormat,
     get_format,
     valid_positive_fp32_word,
@@ -293,9 +294,51 @@ def import_encoded(request: PrepareRequest) -> PreparedMethod:
     return request.job(produce=produce, auxiliaries=auxiliaries)
 
 
+def import_exl3(request: PrepareRequest) -> PreparedMethod:
+    """Preserve an EXL3 source's trellis words and both Hadamard axis vectors."""
+    target = get_format(request.target.format)
+    if not isinstance(target, Exl3Format) or len(request.target.shape) != 2:
+        raise ValueError("import_exl3 requires a trellis matrix target")
+    _preflight(request, values=False)
+    n, k = request.target.shape
+    rows = 0
+    for item in request.inputs:
+        shape = item.source.shape
+        if len(shape) != 2 or shape[1] != k:
+            raise ValueError(f"{item.parameter}: a trellis parent shares one K axis")
+        if shape[0] % 16:
+            raise ValueError(f"{item.parameter}: a trellis input is whole tile bands")
+        if item.source.read_trellis is None:
+            raise ValueError(f"{item.parameter}: trellis words are unavailable")
+        rows += shape[0]
+    if rows != n:
+        raise ValueError(f"{request.target.id}: trellis inputs do not fill the parent")
+    # Bands are whole tile rows; svh follows them and suh spans K, so the chunk only has to be a
+    # multiple of 16 rows. The output rejects a band whose suh disagrees with an earlier one.
+    chunk = max(16, request.rows_per_chunk // 16 * 16)
+
+    def produce(output):
+        origin = 0
+        for item in request.inputs:
+            height = item.source.shape[0]
+            for begin in range(0, height, chunk):
+                end = min(height, begin + chunk)
+                band = item.source.read_trellis(begin, end)
+                if band.format != request.target.format:
+                    raise ValueError(
+                        f"{item.parameter}: source {band.format} differs from target "
+                        f"{request.target.format}"
+                    )
+                output.write_trellis(origin + begin, band.tiles, band.svh, band.suh)
+            origin += height
+
+    return request.job(produce=produce)
+
+
 METHODS: dict[str, Method] = {
     "cast_direct": cast_direct,
     "grouped_absmax": grouped_absmax,
     "fp8_row_maxabs": fp8_row_maxabs,
     "import_encoded": import_encoded,
+    "import_exl3": import_exl3,
 }

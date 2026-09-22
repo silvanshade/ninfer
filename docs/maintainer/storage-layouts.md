@@ -418,7 +418,9 @@ be passed as though its payload were a newly packed smaller matrix. A trellis pa
 than a scale-bearing one: its `suh` vector spans the whole `K` axis, so a submatrix has no operand
 form at all without copying that plane. Adjacent logical projections can still share one parent:
 when the chosen fused implementation consumes their complete union, it receives that parent as one
-native weight.
+native weight. For a trellis that union is rarely available, because one parent holds one `suh`
+and a quantizer derives `suh` per tensor: projections whose input vectors differ word for word are
+separate parents, and a producer that packs them anyway is writing a matrix neither one decodes to.
 
 Offline codecs can produce a standalone slice with its own plane offsets. The loader does not
 perform that transformation. An execution implementation that accepts additional view forms must

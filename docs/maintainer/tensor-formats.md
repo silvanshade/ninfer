@@ -1,6 +1,6 @@
 # NInfer Persistent Tensor Numeric Formats
 
-This reference defines the nine persistent numeric tensor formats accepted by current `.ninfer`
+This reference defines the eleven persistent numeric tensor formats accepted by current `.ninfer`
 artifacts: their logical words, quantization semantics, canonical reference encoders where
 applicable, and conformance boundaries. [Container framing](artifact-container.md),
 [physical layouts](storage-layouts.md), weight recipes and runtime-state codecs are defined
@@ -8,7 +8,7 @@ separately.
 
 ## 1. Registered formats
 
-NInfer has exactly nine persistent numeric tensor formats in four categories.
+NInfer has exactly eleven persistent numeric tensor formats in five categories.
 
 Direct scalar formats preserve one logical scalar word per tensor element:
 
@@ -39,6 +39,13 @@ The row-scaled floating-point weight format is:
 |---|---|---|---|
 | `fp8_e4m3fn_row_bf16` | E4M3FN, 8 bits/weight | one multiplier per logical row | BF16 |
 
+The trellis weight formats are:
+
+| Canonical name | Code | Tile | Axis vectors | Codebook |
+|---|---|---|---|---|
+| `exl3_k3_mul1` | 3-bit trellis step | `16 x 16`, 48 uint16 | binary16 `suh` over K, `svh` over N | mul1 |
+| `exl3_k4_mul1` | 4-bit trellis step | `16 x 16`, 64 uint16 | binary16 `suh` over K, `svh` over N | mul1 |
+
 Each name fixes a code and scale contract. The format registry is implemented in
 [`tools/artifact/formats.py`](../../tools/artifact/formats.py) and
 [`src/artifact/formats.cpp`](../../src/artifact/formats.cpp). Additional formats need an explicit
@@ -53,8 +60,9 @@ The registry keeps the following concerns separate.
 
 A **persistent numeric format** defines the logical words needed to recover a numeric tensor from
 an artifact. The closed registry contains direct scalar formats, grouped signed-integer formats,
-the block-scaled `nvfp4` format, and the row-scaled `fp8_e4m3fn_row_bf16` format. It does not
-identify a tensor's model role, physical byte layout, or supported consumer.
+the block-scaled `nvfp4` format, the row-scaled `fp8_e4m3fn_row_bf16` format, and the trellis
+formats `exl3_k3_mul1` and `exl3_k4_mul1`. It does not identify a tensor's model role, physical
+byte layout, or supported consumer.
 
 ### 2.2 Direct scalar format
 
@@ -71,14 +79,18 @@ word rather than a quantized approximation of another word.
 A **quantization scheme** defines only the persistent logical representation of a quantized weight:
 
 - the code domain;
-- the group axis and group size;
+- the group axis and group size, where the scheme has groups;
 - the scale type and scale granularity;
 - the validity rules for codes and scales;
 - the mathematical reconstruction of each represented weight.
 
-The six quantized names above identify schemes in this sense. Their meanings are immutable: a
-consumer must not infer a different zero point, scale geometry, code range, or reconstruction rule
-from context.
+The eight quantized names above identify schemes in this sense. Their meanings are immutable: a
+consumer must not infer a different zero point, scale geometry, code range, codebook, or
+reconstruction rule from context.
+
+A trellis scheme has no group axis and no per-group scale. Its code domain is a bitstream of
+fixed-width steps, its coefficients are whole-axis vectors, and its reconstruction includes an
+orthogonal rotation. Section 3.5 defines the two registered trellis schemes.
 
 ### 2.4 Conversion method
 
@@ -90,7 +102,8 @@ The built-in `grouped_absmax` method implements the reference encoder in Section
 grouped integer formats. `fp8_row_maxabs` rounds source values to BF16 and quantizes each row to
 E4M3FN codes with a BF16 multiplier. `import_encoded` preserves compatible FP8 or NVFP4 codes,
 scales, and, for NVFP4, the matrix weight divisor. NInfer currently provides no built-in
-floating-point-to-NVFP4 quantizer.
+floating-point-to-NVFP4 quantizer and no built-in trellis quantizer: trellis words are produced by
+an external EXL3 quantizer and preserved exactly on import.
 
 A recipe can supply a Python callable as its method. Different methods can produce different
 valid codes and scales for the same format; they share the format's decoding contract. Method
@@ -118,10 +131,10 @@ among other things:
 
 One format may have more than one deliberately supported layout, but every layout must decode to
 exactly the same direct words or logical codes and scales. The currently registered layouts are
-`contiguous_le_v1` for direct words, `row_split_k128_v1` for grouped signed-integer formats, and
-`block_scale_k16_m128x4_v1` for `nvfp4`, and `row_scale_v1` for
-`fp8_e4m3fn_row_bf16`. Their byte order, plane packing, padding, swizzle, divisor placement, and
-alignment rules belong to the layout registry, not to these nine numeric formats.
+`contiguous_le_v1` for direct words, `row_split_k128_v1` for grouped signed-integer formats,
+`block_scale_k16_m128x4_v1` for `nvfp4`, `row_scale_v1` for `fp8_e4m3fn_row_bf16`, and
+`exl3_tile_v1` for the trellis formats. Their byte order, plane packing, padding, swizzle, divisor
+placement, and alignment rules belong to the layout registry, not to these eleven numeric formats.
 
 ### 2.7 Compute profile and kernel support
 
@@ -297,6 +310,76 @@ The format does not define how a floating-point source is assigned a scale or ro
 A recipe either preserves already selected code and scale words exactly or names its
 conversion method. Activation quantization and activation scales are separate compute or runtime-state
 concerns and are not persistent fields of this format.
+
+### 3.5 `exl3_k3_mul1` and `exl3_k4_mul1`
+
+These are rank-two trellis weight matrices `[N,K]` whose dimensions are positive multiples of 128.
+They carry no group scales. A matrix owns three persistent fields: a code bitstream, a binary16
+vector `suh` over the `K` axis, and a binary16 vector `svh` over the `N` axis. The name fixes both
+the step width `bits` (3 or 4) and the codebook (`mul1`); a different rate or codebook is a
+different format, not a parameter of these two.
+
+#### Code domain
+
+Codes are grouped into `16 x 16` tiles. A tile is `16 * bits` little-endian `uint16` words, read as
+one tail-biting ring of `256 * bits` bits, bit `b` being bit `b % 16` of word `b / 16`, least
+significant first. The tile's 256 weights are indexed `t = 0..255` in row-major order within the
+tile, and weight `t` decodes from the 16-bit trellis word ending at ring bit `(t + 1) * bits - 1`:
+
+```text
+x[t] = ring bits [ (t * bits + bits - 16) mod (256 * bits) .. + 16 )
+```
+
+Consecutive weights therefore share 16 - `bits` bits of state. Every 16-bit word is a legal code;
+the format has no invalid code and no reserved value.
+
+#### Codebook
+
+The `mul1` codebook maps a 16-bit word to a binary16 value with an exact integer step. For word
+`x`, let `y = (x * 0x83DCD12D) mod 2^32` and let `S` be the sum of the four bytes of `y`, so
+`0 <= S <= 1020`. The decoded value is:
+
+```text
+u      = binary16 with bit pattern 0x6400 + S       -- exactly 1024 + S
+k_inv  = binary16 0x1EEE                            -- 2^-8 + 2^-10 + ... , about 1/147.7
+k_bias = binary16 0xC931                            -- -10.3828125
+d[t]   = fused_multiply_add_binary16(u, k_inv, k_bias)
+```
+
+The multiply-add rounds once, in binary16. The `0x6400 + S` step is exact because every binary16
+pattern in `[0x6400, 0x67FF]` is an integer in `[1024, 2047]` with unit spacing.
+
+#### Reconstruction
+
+Let `D` be the decoded `[N,K]` matrix and `H` the order-128 Sylvester Hadamard matrix scaled by
+`1 / sqrt(128)`, which is symmetric and orthogonal. The represented weight is four ordered steps on
+`D`, all in binary32, where each sum runs over the 128-element block containing the index:
+
+```text
+A[n,k]     = sum over k' in k's block of H[k mod 128, k' mod 128] * D[n,k']
+B[n,k]     = A[n,k] * exact_binary16_to_binary32(suh[k])
+C[n,k]     = sum over n' in n's block of H[n mod 128, n' mod 128] * B[n',k]
+w_hat[n,k] = C[n,k] * exact_binary16_to_binary32(svh[n])
+```
+
+The two rotations act on different axes and commute; the two vector multiplications do not commute
+with the rotation that follows them, so the order above is part of the format.
+
+Both vectors are multipliers, not divisors, and neither is a group scale: a row band of the matrix
+cannot be reconstructed without the whole `suh` vector, and a column band cannot be reconstructed
+without the whole `svh` vector. The rotation is part of the format. A consumer that skips it, or
+applies it at another block size, implements a different format.
+
+The transposed convention is equally valid arithmetic and is what the EXL3 reference implementation
+writes: it stores `[K,N]` with `suh` on the left and `svh` on the right. NInfer stores every matrix
+`[N,K]`, so an importer transposes the orientation, not the words.
+
+#### Conversion boundary
+
+The format does not define how a source matrix is rotated, scaled, or searched onto the trellis.
+That belongs to the external quantizer that produced the words. A recipe preserves the code, `suh`
+and `svh` words exactly; NInfer has no trellis encoder and no reference encoder profile for these
+formats.
 
 ## 4. Grouped signed-integer tensor model
 
@@ -556,6 +639,8 @@ A conforming producer must:
   positive FP32 weight divisor under Section 3.3;
 - for `fp8_e4m3fn_row_bf16`, emit only finite E4M3FN code words and valid BF16 row multipliers,
   with signed-zero codes as the only legal codes in a positive-zero-scale row under Section 3.4;
+- for a trellis format, emit the external quantizer's code, `suh` and `svh` words unchanged, and
+  reject a matrix whose dimensions are not multiples of 128 under Section 3.5;
 - record enough conversion provenance for the artifact producer to identify how the values
   were derived;
 - when an encoder converts floating-point source values, fail rather than silently quantize
@@ -584,6 +669,8 @@ The `.ninfer` container and each registered storage layout must:
   divisor under Section 3.3;
 - for `fp8_e4m3fn_row_bf16`, reconstruct every E4M3FN code word and its owning BF16 row multiplier
   under Section 3.4;
+- for a trellis format, reconstruct the code ring of every tile and both binary16 axis vectors
+  under Section 3.5;
 - define its canonical physical-padding contents and producer responsibilities, if it materializes
   padding;
 - reject unknown formats and unsupported format/layout combinations;
@@ -613,8 +700,9 @@ producer contract and the represented values.
 
 A consuming kernel or model component must interpret direct logical words according to Section 3.1,
 grouped signed-integer identities, codes, and scales according to Section 3.2 and Sections 5 and 6,
-`nvfp4` words and divisor according to Section 3.3, and row-scaled FP8 words according to Section
-3.4. It may choose its private fusion, reduction, staging, and intermediate precision; the
+`nvfp4` words and divisor according to Section 3.3, row-scaled FP8 words according to Section 3.4,
+and trellis codes, codebook and rotation according to Section 3.5. It may choose its private
+fusion, reduction, staging, and intermediate precision; the
 observable Op result is qualified against the independent oracle with the Op's named criterion for
 that implementation profile. Kernel implementation details do not alter the persistent format and
 must not be needed to decode an artifact independently.

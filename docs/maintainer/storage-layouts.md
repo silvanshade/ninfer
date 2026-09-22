@@ -15,10 +15,11 @@ The storage registry contains exactly these identities:
 | `row_split_k128_v1` | tensor layout | `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | rank 2 `[N,K]` | 256 bytes |
 | `block_scale_k16_m128x4_v1` | tensor layout | `nvfp4` | rank 2 `[N,K]`, `N % 128 == 0`, `K % 64 == 0` | 256 bytes |
 | `row_scale_v1` | tensor layout | `fp8_e4m3fn_row_bf16` | rank 2 `[N,K]` | 256 bytes |
+| `exl3_tile_v1` | tensor layout | `exl3_k3_mul1`, `exl3_k4_mul1` | rank 2 `[N,K]`, `N % 128 == 0`, `K % 128 == 0` | 256 bytes |
 | `raw_bytes_v1` | resource encoding | not applicable | nonempty byte string | 1 byte |
 
 These format/layout pairs define the current codec support. Native consumer requirements are
-covered separately in Section 8.
+covered separately in Section 9.
 
 Object alignment applies to the object's payload-relative `offset` in the `.ninfer` JSON. Internal
 plane offsets and padding belong to the selected layout. Inter-object padding belongs to the
@@ -321,7 +322,49 @@ encoded by concatenating the selected code rows, recomputing the scale-plane ali
 row count, and appending the selected scale words in the same row order. It does not decode or
 requantize either plane.
 
-## 6. `raw_bytes_v1`
+## 6. `exl3_tile_v1`
+
+`exl3_tile_v1` stores only rank-two trellis matrices `[N,K]`. Both dimensions are positive multiples
+of 128: the codes tile in 16s, but reconstruction rotates both axes in 128-element blocks, so a
+matrix outside that rule has no defined weight. The layout adds no logical or physical matrix
+padding. Let `bits` be the trellis width of the numeric format, 3 for `exl3_k3_mul1` and 4 for
+`exl3_k4_mul1`, and let:
+
+```text
+code_row_bytes    = K * bits / 8
+code_plane_bytes  = N * code_row_bytes
+suh_plane_offset  = align_up(code_plane_bytes, 256)
+suh_plane_bytes   = K * 2
+svh_plane_offset  = suh_plane_offset + align_up(suh_plane_bytes, 256)
+svh_plane_bytes   = N * 2
+payload_bytes     = svh_plane_offset + svh_plane_bytes
+```
+
+The payload begins with the trellis codes. Codes are grouped into `16 x 16` tiles: the tile owning
+rows `16 * i .. 16 * i + 15` and columns `16 * j .. 16 * j + 15` occupies `16 * bits` little-endian
+`uint16` words at code-plane offset `(i * K / 16 + j) * 32 * bits`, so tiles appear in row-major
+tile order and every band of 16 logical rows is one contiguous `16 * code_row_bytes` span. A
+producer converting an exllamav3 checkpoint permutes that tile grid, whose own order is
+column-major `[K/16, N/16]`; the permutation moves whole `16 * bits`-word tiles and never rewrites
+their bits. The layout does not decode a tile: `bits` fixes its size, and the numeric format in
+[`tensor-formats.md`](tensor-formats.md) fixes its meaning.
+
+Zero bytes fill the interval from `code_plane_bytes` to `suh_plane_offset` and from
+`suh_plane_offset + suh_plane_bytes` to `svh_plane_offset`.
+
+Two binary16 Hadamard vectors follow, each little-endian and each on its own 256-aligned offset. The
+`suh` plane holds one word per input column in increasing `k` order, beginning at
+`suh_plane_offset + 2 * k`; the `svh` plane holds one word per output row in increasing `n` order,
+beginning at `svh_plane_offset + 2 * n`. Neither vector is a group scale: they are whole-axis
+factors, so no subset of rows carries a self-sufficient scale.
+
+A logical row view is consequently not a self-describing tensor. Its codes are a contiguous span
+only when the view starts and ends on a tile boundary, its `svh` words are the matching span of the
+row vector, and its `suh` vector is the parent's entire `K` words. Encoding a standalone slice
+copies that complete `suh` plane unchanged; it does not decode, requantize, or re-derive either
+vector.
+
+## 7. `raw_bytes_v1`
 
 `raw_bytes_v1` is a resource encoding, not a tensor layout. Its enclosing object payload is
 the resource byte string itself:
@@ -336,7 +379,7 @@ trailing padding. The resource object's JSON `bytes` is its exact nonzero length
 returns the complete span unchanged. A model contract assigns a resource name and interprets those
 bytes; the common encoding does not infer that meaning from the name.
 
-## 7. Decode boundary
+## 8. Decode boundary
 
 Layout decoding yields only persistent logical words:
 
@@ -347,13 +390,14 @@ Layout decoding yields only persistent logical words:
   matrix-level FP32 weight divisor;
 - `row_scale_v1` yields the natural row-major E4M3FN code words and one BF16 multiplier per logical
   row;
+- `exl3_tile_v1` yields the trellis code words in tile order and both binary16 Hadamard vectors;
 - `raw_bytes_v1` yields the enclosing resource bytes.
 
 Dequantized values follow the reconstruction rule in `tensor-formats.md`. This document does
 not select a quantization encoder, output dtype, accumulation dtype, kernel, runtime device layout,
 or model consumer.
 
-## 8. Logical views and native operands
+## 9. Logical views and native operands
 
 Bindings address C-order logical element ranges of a parent object. The parent retains its full
 geometry and backing allocation, so a view can locate code and scale planes using the original
@@ -363,11 +407,13 @@ matrix dimensions. Materialization uploads each required parent once and binds n
 native operands. Direct tensors can use a contiguous element range. Grouped integer matrices can
 use consecutive complete rows with unchanged K, using independent code, high-bit and scale pointers.
 
-The current native `Weight` bridge requires a complete parent for FP8 and NVFP4. Their consumers
-use the complete matrix geometry for plane addressing; a row slice cannot be passed as though its
-payload were a newly packed smaller matrix. Adjacent logical projections can still share one
-parent: when the chosen fused implementation consumes their complete union, it receives that
-parent as one native weight.
+The current native `Weight` bridge requires a complete parent for FP8, NVFP4 and the trellis
+formats. Their consumers use the complete matrix geometry for plane addressing; a row slice cannot
+be passed as though its payload were a newly packed smaller matrix. A trellis parent is stricter
+than a scale-bearing one: its `suh` vector spans the whole `K` axis, so a submatrix has no operand
+form at all without copying that plane. Adjacent logical projections can still share one parent:
+when the chosen fused implementation consumes their complete union, it receives that parent as one
+native weight.
 
 Offline codecs can produce a standalone slice with its own plane offsets. The loader does not
 perform that transformation. An execution implementation that accepts additional view forms must

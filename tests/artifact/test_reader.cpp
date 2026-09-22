@@ -111,6 +111,44 @@ void geometry_and_views() {
     require(query.weight_scale_divisor == 2 && query.input_scale_divisor == 3 &&
                 context.input_scale_divisor == 4 && nv_parent.weight_scale_divisor == 2,
             "per-use native parameters changed the parent");
+
+    // EXL3 trellis parents. A 16x16 tile is 16*K uint16, so a matrix costs N*K*bits/8; suh
+    // follows the codes over the input columns and svh over the output rows, each half precision
+    // and each 256-aligned. Both axes must be 128-divisible: reconstruction rotates them in
+    // 128-element blocks.
+    const auto exl3 = weight_geometry(QType::EXL3_K4_MUL1, QuantLayout::Exl3Tile,
+                                      std::array<std::uint64_t, 2>{256, 128});
+    require(exl3.code_bytes == 16384 && exl3.code_bytes_per_row == 64 &&
+                exl3.high_offset == 16384 && exl3.high_bytes == 256 && exl3.scale_offset == 16640 &&
+                exl3.scale_bytes == 512 && exl3.bytes == 17152,
+            "EXL3 K=4 plane layout changed");
+    const auto exl3_k3 = weight_geometry(QType::EXL3_K3_MUL1, QuantLayout::Exl3Tile,
+                                         std::array<std::uint64_t, 2>{256, 128});
+    require(exl3_k3.code_bytes == 12288 && exl3_k3.code_bytes_per_row == 48,
+            "EXL3 bitrate did not set the code size");
+    rejects<std::invalid_argument>(
+        [&] {
+            (void)weight_geometry(QType::EXL3_K4_MUL1, QuantLayout::Exl3Tile,
+                                  std::array<std::uint64_t, 2>{256, 64});
+        },
+        "EXL3 accepted a K that cannot be rotated");
+    rejects<std::invalid_argument>(
+        [&] {
+            (void)weight_geometry(QType::NVFP4, QuantLayout::Exl3Tile,
+                                  std::array<std::uint64_t, 2>{256, 128});
+        },
+        "EXL3 tiling accepted a non-trellis format");
+    std::vector<std::byte> trellis(exl3.bytes);
+    const WeightParent exl3_parent{exl3, trellis.data()};
+    const WeightView exl3_rows{{128, 128}, {{&exl3_parent, 0, 128 * 128}}};
+    rejects<std::invalid_argument>([&] { (void)native_weight(exl3_rows); },
+                                   "complete-parent ABI accepted an EXL3 submatrix");
+    const WeightView exl3_all{{256, 128}, {{&exl3_parent, 0, 256 * 128}}};
+    const auto exl3_weight = native_weight(exl3_all);
+    require(exl3_weight.qdata == trellis.data() && exl3_weight.qhigh == trellis.data() + 16384 &&
+                exl3_weight.scales == trellis.data() + 16640 &&
+                exl3_weight.scale_dtype == DType::FP16,
+            "EXL3 native weight lost a plane");
 }
 
 void invalid_directories() {

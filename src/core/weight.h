@@ -16,6 +16,14 @@ enum class QType : std::uint16_t {
     INT32               = 6,
     NVFP4               = 7,
     FP8_E4M3FN_ROW_BF16 = 8,
+    // EXL3 trellis codes. Both the bitrate and the codebook are part of the format rather than
+    // parameters beside it: the rate fixes the tile width (16*K uint16 per 16x16 tile) and the
+    // codebook fixes what a 16-bit trellis word decodes to, and a trellis has no group scales to
+    // attach a size to. mul1 is exllamav3's default and the only codebook admitted here; a name
+    // per (rate, codebook) keeps the container's format string self-describing, as every other
+    // row here is.
+    EXL3_K3_MUL1 = 9,
+    EXL3_K4_MUL1 = 10,
 };
 
 enum class QuantLayout : std::uint16_t {
@@ -23,7 +31,22 @@ enum class QuantLayout : std::uint16_t {
     Contiguous          = 1,
     BlockScaleK16M128x4 = 2,
     RowScale            = 3,
+    // Trellis tiles of 16x16 weights, followed by the input- and output-side Hadamard scale
+    // vectors (suh over K, svh over N).
+    Exl3Tile = 4,
 };
+
+// Bits per weight for the EXL3 trellis formats; zero for every other format.
+[[nodiscard]] constexpr std::uint32_t exl3_bitrate(QType format) noexcept {
+    switch (format) {
+    case QType::EXL3_K3_MUL1:
+        return 3;
+    case QType::EXL3_K4_MUL1:
+        return 4;
+    default:
+        return 0;
+    }
+}
 
 struct Weight {
     const void* payload            = nullptr;

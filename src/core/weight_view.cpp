@@ -142,6 +142,23 @@ WeightGeometry weight_geometry(QType format, QuantLayout layout,
         out.scale_bytes_per_row = k / 16;
         out.code_bytes          = out.elements / 2;
         out.scale_offset        = aligned(out.code_bytes, 256);
+    } else if (layout == QuantLayout::Exl3Tile) {
+        const std::uint64_t bits = exl3_bitrate(format);
+        // The tile grid is 16-wide, but reconstruction rotates both axes in 128-element blocks, so
+        // a matrix whose dimensions are not multiples of 128 has no defined weight at all.
+        if (bits == 0 || n % 128 || k % 128) {
+            throw std::invalid_argument("Exl3Tile requires a trellis format with N%128=0, K%128=0");
+        }
+        // One 16x16 tile holds 16*K uint16 words, so a tile costs 32*K bytes and a whole matrix
+        // costs N*K*bits/8. The two Hadamard vectors follow the codes: suh runs over the input
+        // columns, svh over the output rows, both half precision.
+        out.group_size          = 16;
+        out.code_bytes_per_row  = mul(k, bits) / 8;
+        out.code_bytes          = mul(n, out.code_bytes_per_row);
+        out.high_offset         = aligned(out.code_bytes, 256);
+        out.high_bytes          = mul(k, 2);
+        out.scale_offset        = add(out.high_offset, aligned(out.high_bytes, 256));
+        out.scale_bytes_per_row = 2;
     } else {
         throw std::invalid_argument("unknown quantized weight layout");
     }
@@ -262,10 +279,11 @@ Weight native_weight(const WeightView& view, float input_divisor) {
         throw std::invalid_argument("quantized native Weight requires unchanged parent K");
     }
     const auto planes = weight_row_planes(region);
-    if ((g.layout == QuantLayout::RowScale || g.layout == QuantLayout::BlockScaleK16M128x4) &&
+    if ((g.layout == QuantLayout::RowScale || g.layout == QuantLayout::BlockScaleK16M128x4 ||
+         g.layout == QuantLayout::Exl3Tile) &&
         !is_complete_weight(view)) {
         throw std::invalid_argument(
-            "this native Weight input requires a complete FP8/NVFP4 parent");
+            "this native Weight input requires a complete FP8/NVFP4/EXL3 parent");
     }
     out.padded_shape[1]      = dimension(g.padded_columns);
     out.qdata                = planes.codes;
@@ -289,6 +307,13 @@ Weight native_weight(const WeightView& view, float input_divisor) {
         out.scale_nb[1] = out.scale_nb[2] = out.scale_nb[3] = static_cast<std::int64_t>(out.n) * 2;
     } else if (g.layout == QuantLayout::BlockScaleK16M128x4) {
         out.scale_dtype = DType::FP8_E4M3FN;
+    } else if (g.layout == QuantLayout::Exl3Tile) {
+        // svh is the scale plane the Weight already carries: one half per output row. suh rides
+        // in qhigh, one half per input column, because the kernels take it apart from the codes.
+        out.scale_dtype = DType::FP16;
+        out.scale_ne[0] = out.n;
+        out.scale_nb[0] = 2;
+        out.scale_nb[1] = out.scale_nb[2] = out.scale_nb[3] = static_cast<std::int64_t>(out.n) * 2;
     }
     return out;
 }

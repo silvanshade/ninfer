@@ -319,11 +319,13 @@ group size、scale 类型和解码规则直接由该 codec 定义。
 | q8_g32_fp16 | Codes `[-127,127]`，G32，FP16 multiplier |
 | nvfp4 | E2M1 codes、G16 E4M3FN block scale、FP32 weight divisor |
 | fp8_e4m3fn_row_bf16 | E4M3FN codes，每行一个 BF16 multiplier |
+| exl3_k3_mul1 | 3-bit trellis codes（mul1 codebook），suh/svh 两个 FP16 轴向量 |
+| exl3_k4_mul1 | 4-bit trellis codes（mul1 codebook），suh/svh 两个 FP16 轴向量 |
 
 量化名字末尾的 FP16/BF16 表示 scale 类型。激活计算许可在 uses 中表达。
 Code 范围、特殊浮点值、舍入与精确重建按[数值合同](tensor-formats.md)解释。
 尤其是 NVFP4 的重建采用 `code_value * block_scale / weight_divisor`，逐行 FP8 采用其既定的
-`code_value * row_scale` 重建规则。
+`code_value * row_scale` 重建规则，trellis 格式采用 128 分块 Hadamard 旋转加两个轴向量。
 
 同一数值含义更换 encoder 或校准过程时，format 名保持相同，生成方法记录在 recipe/provenance。
 
@@ -335,6 +337,7 @@ Code 范围、特殊浮点值、舍入与精确重建按[数值合同](tensor-fo
 | row_split_k128_v1 | q4_g64_fp16、q5_g64_fp16、q6_g64_fp16、q8_g32_fp16，正 rank-2 `[N,K]` | 256 |
 | block_scale_k16_m128x4_v1 | nvfp4，`N%128=0`、`K%64=0` | 256 |
 | row_scale_v1 | fp8_e4m3fn_row_bf16，正 rank-2 `[N,K]` | 256 |
+| exl3_tile_v1 | exl3_k3_mul1、exl3_k4_mul1，`N%128=0`、`K%128=0` | 256 |
 | raw_bytes_v1 | Resource，非空字节串 | 1 |
 
 Byte packing、planes、内部 padding、swizzle 和 encoded-size 公式由

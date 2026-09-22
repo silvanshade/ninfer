@@ -13,7 +13,8 @@ import torch
 
 from tools.artifact.codecs.fp8_row import validate_fp8_row_words
 from tools.artifact.formats import valid_positive_fp32_word
-from .logical import EncodedRows, LogicalSource
+from .logical import EncodedRows, LogicalSource, TrellisRows
+from .exl3 import exl3_linear_source
 from .safetensors import SafetensorsSource, tensor_source
 
 
@@ -147,6 +148,10 @@ def matrix_source(
         nonlocal resolved
         if resolved is None:
             actual = format
+            if actual is None and store.has(prefix + ".trellis"):
+                # An EXL3 linear has no weight tensor at all; its planes carry the name.
+                resolved = exl3_linear_source(store, prefix)
+                return resolved
             if actual is None and store.has(prefix + ".weight_packed"):
                 actual = "nvfp4"
             if actual is None and store.describe(name).dtype == "F8_E4M3":
@@ -170,6 +175,13 @@ def matrix_source(
             raise ValueError(f"{name}: selected source does not provide {which}")
         return read()
 
+    def trellis(begin: int, end: int) -> TrellisRows:
+        reader = resolve().read_trellis
+        if reader is None:
+            raise ValueError(f"{name}: selected source does not provide trellis rows")
+        return reader(begin, end)
+
+
     return LogicalSource(
         shape,
         f"{store.path}:{name}",
@@ -177,4 +189,5 @@ def matrix_source(
         encoded,
         lambda: divisor("weight_divisor"),
         lambda: divisor("input_divisor"),
+        trellis,
     )

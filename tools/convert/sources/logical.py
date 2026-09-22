@@ -127,6 +127,23 @@ def select_rows(
             first.weight_divisor,
         )
 
+    def trellis(begin: int, end: int) -> TrellisRows:
+        if source.read_trellis is None:
+            raise ValueError(f"{source.label}: trellis source rows are unavailable")
+        pieces = [
+            source.read_trellis(a // k, b // k) for a, b in spans(begin * k, end * k)
+        ]
+        first = pieces[0]
+        if any(part.format != first.format for part in pieces):
+            raise ValueError(f"{source.label}: incompatible trellis row groups")
+        # Every piece comes from one parent, so they already share one suh.
+        return TrellisRows(
+            first.format,
+            torch.cat([p.tiles for p in pieces]),
+            first.suh,
+            torch.cat([p.svh for p in pieces]),
+        )
+
     return LogicalSource(
         (rows, k),
         f"rows({source.label}, {len(ranges)} spans, {rows} rows)",
@@ -134,6 +151,7 @@ def select_rows(
         encoded if source.read_encoded is not None else None,
         source.weight_divisor,
         source.input_divisor,
+        trellis if source.read_trellis is not None else None,
     )
 
 

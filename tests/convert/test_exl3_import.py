@@ -13,6 +13,8 @@ from tools.artifact.tensor_output import TensorOutput
 from tools.artifact.writer import ArtifactWriter
 from tools.convert.methods import PrepareRequest, MethodInput, import_exl3
 from tools.convert.sources.exl3 import MUL1_MULTIPLIER, exl3_linear_source
+from tools.convert.sources.compressed_tensors import matrix_source
+from tools.convert.sources.logical import select_rows
 from tools.convert.sources.safetensors import SafetensorsSource
 
 BITS = 4
@@ -145,3 +147,28 @@ def test_imported_words_reconstruct_the_same_matrix_as_the_source(tmp_path):
     from tools.artifact.codecs.exl3 import dequantize_exl3_tile
 
     assert torch.equal(values, dequantize_exl3_tile(payload, shape, f"exl3_k{BITS}_mul1"))
+
+
+def test_a_trellis_linear_resolves_from_its_planes_and_slices_at_tile_bands(tmp_path):
+    # An EXL3 linear has no weight tensor, so resolution keys on the planes while the recipe keeps
+    # naming the parameter as it does everywhere else.
+    shape = (256, 128)
+    tensors = _checkpoint(tmp_path, {"model.layers.0.self_attn.q_proj": shape}, seed=17)
+    with SafetensorsSource(tmp_path) as store:
+        source = matrix_source(store, "model.layers.0.self_attn.q_proj.weight", shape)
+        band = select_rows(source, ((128, 256),))
+        assert band.shape == (128, 128)
+        rows = band.read_trellis(0, 128)
+        grid = tensors["model.layers.0.self_attn.q_proj.trellis"].permute(1, 0, 2)
+        assert torch.equal(rows.tiles, grid[8:])
+        assert torch.equal(
+            rows.svh.view(torch.int16),
+            tensors["model.layers.0.self_attn.q_proj.svh"][128:].view(torch.int16),
+        )
+        # A band keeps its parent's whole input vector, because suh spans K.
+        assert torch.equal(
+            rows.suh.view(torch.int16),
+            tensors["model.layers.0.self_attn.q_proj.suh"].view(torch.int16),
+        )
+        with pytest.raises(ValueError, match="tile bands"):
+            select_rows(source, ((8, 24),)).read_trellis(0, 16)

@@ -8,6 +8,8 @@ from fnmatch import fnmatchcase
 from math import prod
 from typing import Sequence
 
+import torch
+
 from tools.artifact.layouts import encoded_size
 from tools.artifact.formats import (
     DirectFormat,
@@ -27,6 +29,7 @@ from .methods import (
     grouped_absmax,
     fp8_row_maxabs,
     import_encoded,
+    import_exl3,
 )
 from .model import Model
 from .sources.logical import LogicalSource, select_rows
@@ -387,7 +390,13 @@ class Recipe:
                 )
             emit([(name, self.selections[name][0]) for name in names], chosen)
             used.update(names)
-        standard = (cast_direct, grouped_absmax, fp8_row_maxabs, import_encoded)
+        standard = (
+            cast_direct,
+            grouped_absmax,
+            fp8_row_maxabs,
+            import_encoded,
+            import_exl3,
+        )
         for names in self.model.packing_groups:
             if any(
                 name in used or name in self.aliases or name in self.separate_parameters
@@ -409,6 +418,14 @@ class Recipe:
                     for _, value in items
                 ]
                 if None in divisors or len(set(divisors)) != 1:
+                    continue
+            if items[0][1].method is import_exl3:
+                # One parent holds one suh, so only projections sliced from the same stored
+                # trellis can share a parent here. Equal suh words are not that test: a quantizer
+                # can derive the same vector for two linears that read the same activation, and
+                # fusing those would be a conversion-time decision the checkpoint never made.
+                origins = {value.source.origin for _, value in items}
+                if len(origins) != 1 or None in origins:
                     continue
             emit(items)
             used.update(names)

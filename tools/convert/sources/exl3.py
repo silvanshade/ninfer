@@ -95,4 +95,5 @@ def exl3_linear_source(store: SafetensorsSource, prefix: str) -> LogicalSource:
         f"{store.path}:{prefix} ({format})",
         read_values,
         read_trellis=read_trellis,
+        origin=f"{store.path}:{prefix}",
     )

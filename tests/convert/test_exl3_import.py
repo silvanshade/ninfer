@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
@@ -16,6 +17,8 @@ from tools.convert.sources.exl3 import MUL1_MULTIPLIER, exl3_linear_source
 from tools.convert.sources.compressed_tensors import matrix_source
 from tools.convert.sources.logical import select_rows
 from tools.convert.sources.safetensors import SafetensorsSource
+from tools.convert.model import Model, Parameter
+from tools.convert.recipe import Recipe
 
 BITS = 4
 
@@ -172,3 +175,84 @@ def test_a_trellis_linear_resolves_from_its_planes_and_slices_at_tile_bands(tmp_
         )
         with pytest.raises(ValueError, match="tile bands"):
             select_rows(source, ((8, 24),)).read_trellis(0, 16)
+
+
+def test_packing_keeps_separate_projections_separate(tmp_path):
+    # Each projection brought its own suh, so one parent cannot hold them and the recipe writes
+    # the linears the checkpoint ships rather than fusing anything.
+    names = ("query", "key")
+    _checkpoint(tmp_path, {name: (128, 128) for name in names})
+    store = SafetensorsSource(tmp_path)
+    with store:
+        model = Model({"text": {"config": {}}})
+        for name in names:
+            model.add(
+                Parameter(
+                    name, (128, 128), exl3_linear_source(store, name), inputs=("input",)
+                )
+            )
+        model.packing_groups = [tuple(names)]
+        recipe = Recipe(model)
+        recipe.assign(names, format=f"exl3_k{BITS}_mul1", method=import_exl3)
+        prepared = recipe.prepare(device="cpu")
+
+    assert len(prepared.weights) == 2
+    assert all(job.spec.shape == (128, 128) for job in prepared.weights)
+    assert prepared.bindings["query"] != prepared.bindings["key"]
+
+
+def test_two_parents_with_one_suh_between_them_still_stay_apart(tmp_path):
+    # A quantizer derives suh from the activation a linear reads, and q/k/v read the same one, so
+    # a checkpoint can ship three parents whose suh words agree exactly. Equal words are not one
+    # parent: fusing them would be a conversion-time decision the checkpoint never made, which is
+    # the thing the owner ruled against, so the packer keys on the source and not on the vector.
+    names = ("query", "key")
+    _checkpoint(tmp_path, {name: (128, 128) for name in names})
+    shared = torch.randn(128, generator=torch.Generator().manual_seed(3)).to(torch.float16)
+    store = SafetensorsSource(tmp_path)
+    with store:
+        sources = {}
+        for name in names:
+            source = exl3_linear_source(store, name)
+            rows = source.read_trellis
+            sources[name] = replace(
+                source,
+                read_trellis=lambda begin, end, rows=rows: replace(
+                    rows(begin, end), suh=shared
+                ),
+            )
+        model = Model({"text": {"config": {}}})
+        for name in names:
+            model.add(Parameter(name, (128, 128), sources[name], inputs=("input",)))
+        model.packing_groups = [tuple(names)]
+        recipe = Recipe(model)
+        recipe.assign(names, format=f"exl3_k{BITS}_mul1", method=import_exl3)
+        prepared = recipe.prepare(device="cpu")
+
+    assert len(prepared.weights) == 2
+    assert prepared.bindings["query"] != prepared.bindings["key"]
+
+
+def test_packing_joins_projections_sliced_from_one_source(tmp_path):
+    shape = (256, 128)
+    _checkpoint(tmp_path, {"in_proj_qkv": shape})
+    store = SafetensorsSource(tmp_path)
+    with store:
+        source = exl3_linear_source(store, "in_proj_qkv")
+        model = Model({"text": {"config": {}}})
+        for name, rows in (("query", (0, 128)), ("value", (128, 256))):
+            model.add(
+                Parameter(
+                    name, (128, 128), select_rows(source, (rows,)), inputs=("input",)
+                )
+            )
+        model.packing_groups = [("query", "value")]
+        recipe = Recipe(model)
+        recipe.assign(
+            ("query", "value"), format=f"exl3_k{BITS}_mul1", method=import_exl3
+        )
+        prepared = recipe.prepare(device="cpu")
+
+    # Both slices carry their parent's suh, so the GDN projections still share one parent.
+    assert len(prepared.weights) == 1
+    assert prepared.weights[0].spec.shape == shape

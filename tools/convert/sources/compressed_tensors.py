@@ -190,4 +190,5 @@ def matrix_source(
         lambda: divisor("weight_divisor"),
         lambda: divisor("input_divisor"),
         trellis,
+        f"{store.path}:{prefix}",
     )

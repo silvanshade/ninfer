@@ -38,6 +38,9 @@ class LogicalSource:
     weight_divisor: Callable[[], bytes] | None = None
     input_divisor: Callable[[], bytes] | None = None
     read_trellis: Callable[[int, int], TrellisRows] | None = None
+    # The stored tensor this view ultimately reads. Two views share a parent when, and only when,
+    # these are equal; a derived vector that happens to match is not the same thing.
+    origin: str | None = None
 
     def values(self, begin: int = 0, end: int | None = None) -> torch.Tensor:
         end = prod(self.shape) if end is None else end
@@ -152,6 +155,7 @@ def select_rows(
         source.weight_divisor,
         source.input_divisor,
         trellis if source.read_trellis is not None else None,
+        source.origin,
     )
 
 

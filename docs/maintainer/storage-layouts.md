@@ -341,13 +341,18 @@ payload_bytes     = svh_plane_offset + svh_plane_bytes
 ```
 
 The payload begins with the trellis codes. Codes are grouped into `16 x 16` tiles: the tile owning
-rows `16 * i .. 16 * i + 15` and columns `16 * j .. 16 * j + 15` occupies `16 * bits` little-endian
-`uint16` words at code-plane offset `(i * K / 16 + j) * 32 * bits`, so tiles appear in row-major
-tile order and every band of 16 logical rows is one contiguous `16 * code_row_bytes` span. A
-producer converting an exllamav3 checkpoint permutes that tile grid, whose own order is
-column-major `[K/16, N/16]`; the permutation moves whole `16 * bits`-word tiles and never rewrites
-their bits. The layout does not decode a tile: `bits` fixes its size, and the numeric format in
-[`tensor-formats.md`](tensor-formats.md) fixes its meaning.
+rows `16 * i .. 16 * i + 15` and columns `16 * j .. 16 * j + 15` occupies `16 * bits` `uint16`
+words at code-plane offset `(i * K / 16 + j) * 32 * bits`, so tiles appear in row-major tile order
+and every band of 16 logical rows is one contiguous `16 * code_row_bytes` span. A producer
+converting an exllamav3 checkpoint permutes that tile grid, whose own order is column-major
+`[K/16, N/16]`; the permutation moves whole `16 * bits`-word tiles and never rewrites their bits.
+
+Within a tile, the words are stored in the order the EXL3 kernels load them, which is the bitstream
+order with each adjacent pair of words exchanged: stream word `w` is stored at index `w ^ 1`. The
+stream itself is most significant bit first, so stream bit `b` is bit `15 - b % 16` of stream word
+`b / 16`. The layout preserves those words exactly; how the stream divides into trellis steps, and
+what a step decodes to, belong to the numeric format in
+[`tensor-formats.md`](tensor-formats.md).
 
 Zero bytes fill the interval from `code_plane_bytes` to `suh_plane_offset` and from
 `suh_plane_offset + suh_plane_bytes` to `svh_plane_offset`.

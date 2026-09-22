@@ -321,17 +321,24 @@ different format, not a parameter of these two.
 
 #### Code domain
 
-Codes are grouped into `16 x 16` tiles. A tile is `16 * bits` little-endian `uint16` words, read as
-one tail-biting ring of `256 * bits` bits, bit `b` being bit `b % 16` of word `b / 16`, least
-significant first. The tile's 256 weights are indexed `t = 0..255` in row-major order within the
-tile, and weight `t` decodes from the 16-bit trellis word ending at ring bit `(t + 1) * bits - 1`:
+Codes are grouped into `16 x 16` tiles. A tile's `16 * bits` words form one tail-biting ring of
+`256 * bits` bits, read most significant bit first, the bit order the storage layout records. The
+ring holds 256 trellis steps of `bits` bits each, step `t` at ring bits `[t * bits, t * bits +
+bits)`, and the state that decodes weight `t` is the 16-bit window ending with that step:
 
 ```text
 x[t] = ring bits [ (t * bits + bits - 16) mod (256 * bits) .. + 16 )
 ```
 
-Consecutive weights therefore share 16 - `bits` bits of state. Every 16-bit word is a legal code;
-the format has no invalid code and no reserved value.
+Consecutive weights therefore share `16 - bits` bits of state, and the ring closes: the first
+weights inherit state from the last. Every 16-bit window is a legal code; the format has no invalid
+code and no reserved value.
+
+Step index `t` is not the tile's row-major position. It is EXL3's tensor-core element order: with
+lane `l = t / 8` and slot `s = t % 8`, step `t` owns row `2 * (l % 4) + s % 2 + 8 * ((s % 4) / 2)`
+and column `l / 4 + 8 * (s / 4)` of a `16 x 16` tile whose rows run along `K`, all divisions being
+integer. NInfer stores the matrix `[N,K]`, so that tile row is the stored tile's column and that
+tile column is its row.
 
 #### Codebook
 

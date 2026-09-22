@@ -9,11 +9,13 @@ from __future__ import annotations
 import torch
 
 from .codecs.direct import encode_direct
+from .codecs.exl3 import encode_exl3_tile
 from .codecs.fp8_row import encode_fp8_row_scaled
 from .codecs.nvfp4 import encode_nvfp4
 from .codecs.row_split import encode_row_split, split_row_planes
 from .formats import (
     DirectFormat,
+    Exl3Format,
     Fp8RowFormat,
     Nvfp4Format,
     QuantFormat,
@@ -21,6 +23,7 @@ from .formats import (
 )
 from .layouts import (
     block_scale_geometry,
+    exl3_tile_geometry,
     row_scale_geometry,
     row_split_geometry,
 )
@@ -38,6 +41,7 @@ class TensorOutput:
         self.format = get_format(obj.format)
         self._padding_initialized = False
         self._divisor: bytes | None = None
+        self._input_vector: bytes | None = None
 
     def write_bytes(self, offset: int, data: bytes | memoryview) -> None:
         self.writer.write_region(self.object.id, offset, data)
@@ -67,6 +71,12 @@ class TensorOutput:
         elif isinstance(self.format, Nvfp4Format):
             g = block_scale_geometry(self.format, obj.shape)
             gaps = ((g.code_plane_bytes, g.scale_plane_offset),)
+        elif isinstance(self.format, Exl3Format):
+            g = exl3_tile_geometry(self.format, obj.shape)
+            gaps = (
+                (g.code_plane_bytes, g.suh_offset),
+                (g.suh_offset + g.suh_bytes, g.svh_offset),
+            )
         else:
             gaps = ()
         for begin, end in gaps:
@@ -125,3 +135,43 @@ class TensorOutput:
                 raise ValueError(f"{obj.id}: weight divisor changed between row blocks")
         else:
             raise TypeError(f"{obj.id}: direct format does not accept quantized codes")
+
+    def write_trellis(
+        self,
+        row_begin: int,
+        tiles: torch.Tensor,
+        svh: torch.Tensor,
+        suh: torch.Tensor,
+    ) -> None:
+        """Write a band of trellis tile rows, its svh words, and the whole suh vector.
+
+        ``suh`` spans the parent's K axis whatever the band is, so every band repeats it; the
+        writer rejects a band that disagrees with an earlier one rather than keeping the last.
+        """
+
+        obj = self.object
+        if not isinstance(self.format, Exl3Format):
+            raise TypeError(f"{obj.id}: this format does not accept trellis tiles")
+        g = exl3_tile_geometry(self.format, obj.shape)
+        rows = tiles.shape[0] * 16
+        if row_begin % 16 or rows <= 0 or row_begin + rows > g.n:
+            raise ValueError(f"{obj.id}: trellis output needs whole 16-row tile bands")
+        self._padding()
+        band = encode_exl3_tile(
+            tiles, suh, svh, (rows, g.k), self.format
+        )
+        local = exl3_tile_geometry(self.format, (rows, g.k))
+        block = memoryview(band)
+        self.write_bytes(
+            row_begin * g.code_row_bytes, block[: local.code_plane_bytes]
+        )
+        self.write_bytes(
+            g.svh_offset + row_begin * 2,
+            block[local.svh_offset : local.svh_offset + local.svh_bytes],
+        )
+        input_vector = bytes(block[local.suh_offset : local.suh_offset + local.suh_bytes])
+        if self._input_vector is None:
+            self.write_bytes(g.suh_offset, input_vector)
+            self._input_vector = input_vector
+        elif self._input_vector != input_vector:
+            raise ValueError(f"{obj.id}: suh changed between trellis bands")

@@ -16,6 +16,10 @@ from tools.artifact.layouts import (
     encoded_size,
     exl3_tile_geometry,
 )
+from tools.artifact.reader import Artifact
+from tools.artifact.schema import TensorSpec
+from tools.artifact.tensor_output import TensorOutput
+from tools.artifact.writer import ArtifactWriter
 from tools.convert.recipe import default_layout
 
 
@@ -138,3 +142,42 @@ def test_hadamard_matrix_is_orthogonal_and_symmetric():
         [[bin(int(i) & int(j)).count("1") & 1 for j in index] for i in index]
     )
     assert torch.equal(hadamard.sign(), torch.where(parity == 1, -1.0, 1.0))
+
+
+def _writer(path, spec):
+    return ArtifactWriter(
+        path, [spec], components={"text": {"config": {}}}, bindings={}
+    )
+
+
+def test_trellis_object_is_written_one_tile_band_at_a_time(tmp_path):
+    shape, bits = (256, 128), 4
+    words, suh, svh = _random_trellis(shape, bits, seed=451)
+    path = tmp_path / "trellis.ninfer"
+    spec = TensorSpec("w", shape, "exl3_k4_mul1", "exl3_tile_v1")
+    with _writer(path, spec) as writer:
+        output = TensorOutput(writer, "w")
+        for begin in (0, 128):
+            band = slice(begin // 16, begin // 16 + 8)
+            output.write_trellis(begin, words[band], svh[begin : begin + 128], suh)
+
+    artifact = Artifact(path)
+    payload = artifact.read_object("w")
+    assert payload == encode_exl3_tile(words, suh, svh, shape, "exl3_k4_mul1")
+
+
+def test_trellis_writer_rejects_partial_bands_and_a_changed_input_vector(tmp_path):
+    shape, bits = (256, 128), 4
+    words, suh, svh = _random_trellis(shape, bits, seed=452)
+    path = tmp_path / "rejects.ninfer"
+    spec = TensorSpec("w", shape, "exl3_k4_mul1", "exl3_tile_v1")
+    with pytest.raises(ValueError, match="whole 16-row tile bands"):
+        with _writer(path, spec) as writer:
+            output = TensorOutput(writer, "w")
+            output.write_trellis(8, words[:8], svh[:128], suh)
+
+    with pytest.raises(ValueError, match="suh changed"):
+        with _writer(tmp_path / "second.ninfer", spec) as writer:
+            output = TensorOutput(writer, "w")
+            output.write_trellis(0, words[:8], svh[:128], suh)
+            output.write_trellis(128, words[8:], svh[128:], suh + 1)

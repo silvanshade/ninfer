@@ -59,10 +59,20 @@ The built-in recipes are ordinary Python functions in
 | `qwen3_6_35b_a3b` | Q4 experts, Q5/Q6 expert down, Q8 shared/projection weights | None |
 | `qwen3_6_27b_nvfp4` | Imported NVFP4, selected BF16 projections, Q8 vocabulary weights | `quantized` |
 | `qwen3_8_27b_nvfp4` | Imported NVFP4/FP8, FP8 embedding generated from BF16 | `quantized` |
+| `qwen3_8_27b_exl3` | Imported EXL3 trellises at the checkpoint's own rate and codebook, BF16 GDN a/b controls, Q5 elsewhere, Q8 vocabulary weights | `quantized` |
 
 These names select conversion choices. Runtime execution is selected from the architecture,
 configuration and actual bindings stored in the artifact. `--name` sets the public model name;
 it does not select kernels.
+
+The EXL3 recipe does not choose a rate or a codebook. Each projection is asked what its source
+already is: a linear whose checkpoint carries trellis planes is imported exactly as quantized, and a
+linear the quantizer left alone takes the groupwise representation, except the GDN `a`/`b` controls,
+which the native gating projection reads as BF16 and the checkpoint already leaves unquantized. A
+trellis parent holds one input Hadamard vector, so projections that arrived as separate tensors stay
+separate parents, and projections that arrived as one tensor (GDN `in_proj_qkv`) stay one parent;
+nothing is fused at conversion time and nothing is requantized. At runtime each separate parent is
+its own GEMM into its slice of the projection output, in place of the fused dual-parent kernels.
 
 For a Qwen3.8-27B NVFP4/FP8 artifact with DFlash2:
 

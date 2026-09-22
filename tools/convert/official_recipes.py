@@ -198,6 +198,10 @@ def _exl3_dense(model, recipe, sources, vocabulary):
     for name, parameter in model.parameters.items():
         if not parameter.projection or name.startswith(("vision/", "mtp/", "dflash")):
             continue
+        if name.endswith(("/gdn/a_projection", "/gdn/b_projection")):
+            # The native GDN control reads BF16; the checkpoint leaves these unquantized.
+            recipe.separate(name)
+            continue
         source = model.source(name, quantized)
         format = trellis_format(source)
         if format is None:

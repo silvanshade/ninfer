@@ -608,6 +608,9 @@ class _Builder:
         )
         roles = [prefix + "gdn/" + role for role in ("query", "key", "value", "z")]
         self.group(*roles)
+        # Where z cannot join (an EXL3 trellis parent holds one input rotation), in_proj_qkv still
+        # ships q, k and v as one stored tensor and stays one parent.
+        self.group(*roles[:3])
         self.group(*roles[:2])
         self.group(*roles[2:])
         self.group(prefix + "gdn/a_projection", prefix + "gdn/b_projection")

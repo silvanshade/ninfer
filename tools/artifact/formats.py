@@ -70,8 +70,12 @@ Q6_G64_FP16 = QuantFormat("q6_g64_fp16", 6, 64, -32, 31)
 Q8_G32_FP16 = QuantFormat("q8_g32_fp16", 8, 32, -127, 127)
 NVFP4 = Nvfp4Format("nvfp4", 16)
 FP8_E4M3FN_ROW_BF16 = Fp8RowFormat("fp8_e4m3fn_row_bf16")
-EXL3_K3_MUL1 = Exl3Format("exl3_k3_mul1", 3)
-EXL3_K4_MUL1 = Exl3Format("exl3_k4_mul1", 4)
+EXL3_RATES = tuple(Exl3Format(f"exl3_k{bits}_mul1", bits) for bits in range(1, 9))
+EXL3_K3_MUL1, EXL3_K4_MUL1, EXL3_K6_MUL1 = (
+    EXL3_RATES[2],
+    EXL3_RATES[3],
+    EXL3_RATES[5],
+)
 
 
 DIRECT_FORMATS = MappingProxyType({item.name: item for item in (BF16, FP32, INT32)})
@@ -80,9 +84,7 @@ QUANT_FORMATS = MappingProxyType(
 )
 NVFP4_FORMATS = MappingProxyType({NVFP4.name: NVFP4})
 FP8_ROW_FORMATS = MappingProxyType({FP8_E4M3FN_ROW_BF16.name: FP8_E4M3FN_ROW_BF16})
-EXL3_FORMATS = MappingProxyType(
-    {item.name: item for item in (EXL3_K3_MUL1, EXL3_K4_MUL1)}
-)
+EXL3_FORMATS = MappingProxyType({item.name: item for item in EXL3_RATES})
 NUMERIC_FORMATS = MappingProxyType(
     {
         **DIRECT_FORMATS,

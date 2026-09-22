@@ -73,8 +73,16 @@ def test_exl3_tile_layout_rejects_untileable_shapes_and_other_formats():
 
 
 def test_trellis_formats_select_the_trellis_layout():
-    assert default_layout("exl3_k3_mul1") == "exl3_tile_v1"
-    assert default_layout("exl3_k4_mul1") == "exl3_tile_v1"
+    for bits in range(1, 9):
+        name = f"exl3_k{bits}_mul1"
+        assert default_layout(name) == "exl3_tile_v1"
+        assert exl3_tile_geometry(name, (128, 128)).code_plane_bytes == 128 * 128 * bits // 8
+    # Half-integer rates carry eight more words per tile, so they are a different geometry and
+    # have no name here; nor does any other codebook.
+    for unknown in ("exl3_k3.5_mul1", "exl3_k4", "exl3_k4_mcg"):
+        with pytest.raises(ValueError):
+            default_layout(unknown)
+
 
 
 def test_trellis_ring_carries_state_between_consecutive_weights():

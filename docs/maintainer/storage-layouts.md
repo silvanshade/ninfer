@@ -15,7 +15,7 @@ The storage registry contains exactly these identities:
 | `row_split_k128_v1` | tensor layout | `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | rank 2 `[N,K]` | 256 bytes |
 | `block_scale_k16_m128x4_v1` | tensor layout | `nvfp4` | rank 2 `[N,K]`, `N % 128 == 0`, `K % 64 == 0` | 256 bytes |
 | `row_scale_v1` | tensor layout | `fp8_e4m3fn_row_bf16` | rank 2 `[N,K]` | 256 bytes |
-| `exl3_tile_v1` | tensor layout | `exl3_k3_mul1`, `exl3_k4_mul1` | rank 2 `[N,K]`, `N % 128 == 0`, `K % 128 == 0` | 256 bytes |
+| `exl3_tile_v1` | tensor layout | `exl3_k1_mul1` … `exl3_k8_mul1` | rank 2 `[N,K]`, `N % 128 == 0`, `K % 128 == 0` | 256 bytes |
 | `raw_bytes_v1` | resource encoding | not applicable | nonempty byte string | 1 byte |
 
 These format/layout pairs define the current codec support. Native consumer requirements are
@@ -327,8 +327,8 @@ requantize either plane.
 `exl3_tile_v1` stores only rank-two trellis matrices `[N,K]`. Both dimensions are positive multiples
 of 128: the codes tile in 16s, but reconstruction rotates both axes in 128-element blocks, so a
 matrix outside that rule has no defined weight. The layout adds no logical or physical matrix
-padding. Let `bits` be the trellis width of the numeric format, 3 for `exl3_k3_mul1` and 4 for
-`exl3_k4_mul1`, and let:
+padding. Let `bits` be the trellis width of the numeric format, the `b` in `exl3_k<b>_mul1`, and
+let:
 
 ```text
 code_row_bytes    = K * bits / 8

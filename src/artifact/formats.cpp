@@ -17,8 +17,14 @@ constexpr std::array kFormats = {
     std::pair{QType::Q8_G32_FP16, std::string_view{"q8_g32_fp16"}},
     std::pair{QType::NVFP4, std::string_view{"nvfp4"}},
     std::pair{QType::FP8_E4M3FN_ROW_BF16, std::string_view{"fp8_e4m3fn_row_bf16"}},
+    std::pair{QType::EXL3_K1_MUL1, std::string_view{"exl3_k1_mul1"}},
+    std::pair{QType::EXL3_K2_MUL1, std::string_view{"exl3_k2_mul1"}},
     std::pair{QType::EXL3_K3_MUL1, std::string_view{"exl3_k3_mul1"}},
     std::pair{QType::EXL3_K4_MUL1, std::string_view{"exl3_k4_mul1"}},
+    std::pair{QType::EXL3_K5_MUL1, std::string_view{"exl3_k5_mul1"}},
+    std::pair{QType::EXL3_K6_MUL1, std::string_view{"exl3_k6_mul1"}},
+    std::pair{QType::EXL3_K7_MUL1, std::string_view{"exl3_k7_mul1"}},
+    std::pair{QType::EXL3_K8_MUL1, std::string_view{"exl3_k8_mul1"}},
 };
 constexpr std::array kLayouts = {
     std::pair{QuantLayout::Contiguous, std::string_view{"contiguous_le_v1"}},

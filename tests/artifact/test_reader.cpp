@@ -124,7 +124,10 @@ void geometry_and_views() {
             "EXL3 K=4 plane layout changed");
     const auto exl3_k3 = weight_geometry(QType::EXL3_K3_MUL1, QuantLayout::Exl3Tile,
                                          std::array<std::uint64_t, 2>{256, 128});
-    require(exl3_k3.code_bytes == 12288 && exl3_k3.code_bytes_per_row == 48,
+    const auto exl3_k6 = weight_geometry(QType::EXL3_K6_MUL1, QuantLayout::Exl3Tile,
+                                         std::array<std::uint64_t, 2>{256, 128});
+    require(exl3_k3.code_bytes == 12288 && exl3_k3.code_bytes_per_row == 48 &&
+                exl3_k6.code_bytes == 24576 && exl3_k6.code_bytes_per_row == 96,
             "EXL3 bitrate did not set the code size");
     rejects<std::invalid_argument>(
         [&] {

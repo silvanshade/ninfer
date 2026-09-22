@@ -17,6 +17,7 @@ from typing import Sequence
 from .formats import (
     DirectFormat,
     Exl3Format,
+    EXL3_RATES,
     Fp8RowFormat,
     Nvfp4Format,
     NumericFormat,
@@ -111,7 +112,7 @@ ROW_SCALE_V1 = Layout(
 EXL3_TILE_V1 = Layout(
     "exl3_tile_v1",
     256,
-    frozenset(("exl3_k3_mul1", "exl3_k4_mul1")),
+    frozenset(item.name for item in EXL3_RATES),
 )
 
 LAYOUTS = MappingProxyType(

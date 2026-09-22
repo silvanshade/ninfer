@@ -1,6 +1,6 @@
 # NInfer Persistent Tensor Numeric Formats
 
-This reference defines the eleven persistent numeric tensor formats accepted by current `.ninfer`
+This reference defines the seventeen persistent numeric tensor formats accepted by current `.ninfer`
 artifacts: their logical words, quantization semantics, canonical reference encoders where
 applicable, and conformance boundaries. [Container framing](artifact-container.md),
 [physical layouts](storage-layouts.md), weight recipes and runtime-state codecs are defined
@@ -8,7 +8,7 @@ separately.
 
 ## 1. Registered formats
 
-NInfer has exactly eleven persistent numeric tensor formats in five categories.
+NInfer has exactly seventeen persistent numeric tensor formats in five categories.
 
 Direct scalar formats preserve one logical scalar word per tensor element:
 
@@ -39,12 +39,17 @@ The row-scaled floating-point weight format is:
 |---|---|---|---|
 | `fp8_e4m3fn_row_bf16` | E4M3FN, 8 bits/weight | one multiplier per logical row | BF16 |
 
-The trellis weight formats are:
+The trellis weight formats are the eight integer rates of the mul1 codebook,
+`exl3_k1_mul1` through `exl3_k8_mul1`:
 
 | Canonical name | Code | Tile | Axis vectors | Codebook |
 |---|---|---|---|---|
-| `exl3_k3_mul1` | 3-bit trellis step | `16 x 16`, 48 uint16 | binary16 `suh` over K, `svh` over N | mul1 |
-| `exl3_k4_mul1` | 4-bit trellis step | `16 x 16`, 64 uint16 | binary16 `suh` over K, `svh` over N | mul1 |
+| `exl3_k<b>_mul1`, `b` in 1..8 | `b`-bit trellis step | `16 x 16`, `16 * b` uint16 | binary16 `suh` over K, `svh` over N | mul1 |
+
+A published EXL3 quantization uses one rate for the body and another for the head, so a model
+carries more than one of these names; the 4-bit quantization of Qwen3.8-27B, for example, stores its
+head at 6 bits. The half-integer rates 1.5, 2.5 and 3.5 are not registered: their tiles carry eight
+more words, which is a different geometry rather than another rate.
 
 Each name fixes a code and scale contract. The format registry is implemented in
 [`tools/artifact/formats.py`](../../tools/artifact/formats.py) and
@@ -60,8 +65,8 @@ The registry keeps the following concerns separate.
 
 A **persistent numeric format** defines the logical words needed to recover a numeric tensor from
 an artifact. The closed registry contains direct scalar formats, grouped signed-integer formats,
-the block-scaled `nvfp4` format, the row-scaled `fp8_e4m3fn_row_bf16` format, and the trellis
-formats `exl3_k3_mul1` and `exl3_k4_mul1`. It does not identify a tensor's model role, physical
+the block-scaled `nvfp4` format, the row-scaled `fp8_e4m3fn_row_bf16` format, and the eight trellis
+formats `exl3_k1_mul1` through `exl3_k8_mul1`. It does not identify a tensor's model role, physical
 byte layout, or supported consumer.
 
 ### 2.2 Direct scalar format
@@ -134,7 +139,7 @@ exactly the same direct words or logical codes and scales. The currently registe
 `contiguous_le_v1` for direct words, `row_split_k128_v1` for grouped signed-integer formats,
 `block_scale_k16_m128x4_v1` for `nvfp4`, `row_scale_v1` for `fp8_e4m3fn_row_bf16`, and
 `exl3_tile_v1` for the trellis formats. Their byte order, plane packing, padding, swizzle, divisor
-placement, and alignment rules belong to the layout registry, not to these eleven numeric formats.
+placement, and alignment rules belong to the layout registry, not to these seventeen numeric formats.
 
 ### 2.7 Compute profile and kernel support
 
@@ -311,13 +316,13 @@ A recipe either preserves already selected code and scale words exactly or names
 conversion method. Activation quantization and activation scales are separate compute or runtime-state
 concerns and are not persistent fields of this format.
 
-### 3.5 `exl3_k3_mul1` and `exl3_k4_mul1`
+### 3.5 `exl3_k1_mul1` through `exl3_k8_mul1`
 
 These are rank-two trellis weight matrices `[N,K]` whose dimensions are positive multiples of 128.
 They carry no group scales. A matrix owns three persistent fields: a code bitstream, a binary16
 vector `suh` over the `K` axis, and a binary16 vector `svh` over the `N` axis. The name fixes both
-the step width `bits` (3 or 4) and the codebook (`mul1`); a different rate or codebook is a
-different format, not a parameter of these two.
+the step width `bits`, from 1 to 8, and the codebook (`mul1`); a different rate or codebook is a
+different format, not a parameter of these.
 
 #### Code domain
 
@@ -387,6 +392,11 @@ The format does not define how a source matrix is rotated, scaled, or searched o
 That belongs to the external quantizer that produced the words. A recipe preserves the code, `suh`
 and `svh` words exactly; NInfer has no trellis encoder and no reference encoder profile for these
 formats.
+
+An EXL3 checkpoint marks its codebook by carrying a `mul1` or `mcg` scalar tensor beside each
+trellis; a checkpoint with neither uses the reference's plain 3inst codebook, which these formats do
+not represent. An import reads the marker and refuses what it cannot name, because every word of an
+unmarked checkpoint is otherwise a valid word of a format that decodes it wrongly.
 
 ## 4. Grouped signed-integer tensor model
 

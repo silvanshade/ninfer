@@ -19,11 +19,17 @@ enum class QType : std::uint16_t {
     // EXL3 trellis codes. Both the bitrate and the codebook are part of the format rather than
     // parameters beside it: the rate fixes the tile width (16*K uint16 per 16x16 tile) and the
     // codebook fixes what a 16-bit trellis word decodes to, and a trellis has no group scales to
-    // attach a size to. mul1 is exllamav3's default and the only codebook admitted here; a name
-    // per (rate, codebook) keeps the container's format string self-describing, as every other
-    // row here is.
-    EXL3_K3_MUL1 = 9,
-    EXL3_K4_MUL1 = 10,
+    // attach a size to. The admitted set is the reference's own closed one, integer rates 1..8
+    // under the mul1 codebook; the half-integer rates carry eight more words per tile and are a
+    // different geometry, and another codebook would be another name.
+    EXL3_K1_MUL1 = 9,
+    EXL3_K2_MUL1 = 10,
+    EXL3_K3_MUL1 = 11,
+    EXL3_K4_MUL1 = 12,
+    EXL3_K5_MUL1 = 13,
+    EXL3_K6_MUL1 = 14,
+    EXL3_K7_MUL1 = 15,
+    EXL3_K8_MUL1 = 16,
 };
 
 enum class QuantLayout : std::uint16_t {
@@ -38,14 +44,10 @@ enum class QuantLayout : std::uint16_t {
 
 // Bits per weight for the EXL3 trellis formats; zero for every other format.
 [[nodiscard]] constexpr std::uint32_t exl3_bitrate(QType format) noexcept {
-    switch (format) {
-    case QType::EXL3_K3_MUL1:
-        return 3;
-    case QType::EXL3_K4_MUL1:
-        return 4;
-    default:
-        return 0;
-    }
+    const auto value = static_cast<std::uint16_t>(format);
+    const auto first = static_cast<std::uint16_t>(QType::EXL3_K1_MUL1);
+    const auto last  = static_cast<std::uint16_t>(QType::EXL3_K8_MUL1);
+    return value >= first && value <= last ? std::uint32_t{1} + value - first : 0;
 }
 
 struct Weight {

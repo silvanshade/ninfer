@@ -181,7 +181,8 @@ def matrix_source(
             raise ValueError(f"{name}: selected source does not provide trellis rows")
         return reader(begin, end)
 
-
+    # Whether a linear is a trellis is visible without resolving anything, and a recipe asks that
+    # question of every projection, so the reader is present only where the planes are.
     return LogicalSource(
         shape,
         f"{store.path}:{name}",
@@ -189,6 +190,6 @@ def matrix_source(
         encoded,
         lambda: divisor("weight_divisor"),
         lambda: divisor("input_divisor"),
-        trellis,
+        trellis if format is None and store.has(prefix + ".trellis") else None,
         f"{store.path}:{prefix}",
     )

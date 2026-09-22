@@ -97,3 +97,15 @@ def exl3_linear_source(store: SafetensorsSource, prefix: str) -> LogicalSource:
         read_trellis=read_trellis,
         origin=f"{store.path}:{prefix}",
     )
+
+
+def trellis_format(source: LogicalSource) -> str | None:
+    """Name the trellis format a source carries, or nothing when it carries none.
+
+    A recipe does not choose the rate or the codebook for an imported checkpoint; it asks what the
+    words already are.
+    """
+
+    if source.read_trellis is None:
+        return None
+    return source.read_trellis(0, TILE).format

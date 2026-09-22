@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+from functools import partial
 
 import pytest
 from safetensors.torch import save_file
@@ -19,6 +20,7 @@ from tools.convert.sources.logical import select_rows
 from tools.convert.sources.safetensors import SafetensorsSource
 from tools.convert.model import Model, Parameter
 from tools.convert.recipe import Recipe
+from tools.convert.official_recipes import _exl3_dense
 
 BITS = 4
 
@@ -256,3 +258,48 @@ def test_packing_joins_projections_sliced_from_one_source(tmp_path):
     # Both slices carry their parent's suh, so the GDN projections still share one parent.
     assert len(prepared.weights) == 1
     assert prepared.weights[0].spec.shape == shape
+
+
+def test_the_recipe_takes_what_the_checkpoint_quantized_and_nothing_else(tmp_path):
+    # A checkpoint that quantized the attention projections but left the GDN gate alone: the
+    # recipe imports the first as trellises at the checkpoint's own rate and falls back to the
+    # model's groupwise representation for the second, without requantizing either.
+    trellis = {
+        "model.layers.0.self_attn.q_proj": (256, 128),
+        "model.layers.0.self_attn.k_proj": (128, 128),
+    }
+    tensors = _checkpoint(tmp_path, trellis)
+    tensors["model.layers.0.linear_attn.in_proj_a.weight"] = torch.zeros(
+        128, 128, dtype=torch.float16
+    )
+    save_file(tensors, tmp_path / "model.safetensors")
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {n: "model.safetensors" for n in tensors}}),
+        encoding="utf-8",
+    )
+
+    store = SafetensorsSource(tmp_path)
+    with store:
+        model = Model({"text": {"config": {}}})
+        for name, prefix, shape in (
+            ("text/layers/0/attention/query", "model.layers.0.self_attn.q_proj", (256, 128)),
+            ("text/layers/0/attention/key", "model.layers.0.self_attn.k_proj", (128, 128)),
+            ("text/layers/0/gdn/gate", "model.layers.0.linear_attn.in_proj_a", (128, 128)),
+        ):
+            factory = partial(matrix_source, name=f"{prefix}.weight", shape=shape)
+            model.add(
+                Parameter(
+                    name,
+                    shape,
+                    factory(store),
+                    source_factory=lambda s, f, factory=factory: factory(s),
+                    inputs=("input",),
+                )
+            )
+        recipe = Recipe(model)
+        _exl3_dense(model, recipe, {"quantized": store}, "q8_g32_fp16")
+        prepared = recipe.prepare(device="cpu")
+        formats = {job.spec.id: job.spec.format for job in prepared.weights}
+
+    assert set(formats.values()) == {f"exl3_k{BITS}_mul1", "q5_g64_fp16"}
+    assert len(formats) == 3

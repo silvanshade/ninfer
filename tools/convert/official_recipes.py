@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from .methods import cast_direct, fp8_row_maxabs, grouped_absmax, import_encoded
+from .methods import (
+    cast_direct,
+    fp8_row_maxabs,
+    grouped_absmax,
+    import_encoded,
+    import_exl3,
+)
+from .sources.exl3 import trellis_format
 
 Q4 = "q4_g64_fp16"
 Q5 = "q5_g64_fp16"
@@ -174,10 +181,40 @@ def qwen3_8_27b_nvfp4(model, recipe, sources):
         )
 
 
+
+def _exl3_dense(model, recipe, sources, vocabulary):
+    """Take every linear the EXL3 checkpoint quantized, exactly as it quantized it.
+
+    The checkpoint decides what is a trellis: a linear it left alone has no trellis planes, so it
+    falls back to the groupwise representation this model uses elsewhere. Nothing is requantized,
+    and nothing is fused — a trellis parent holds one ``suh``, so the attention projections stay
+    the three matrices the checkpoint ships.
+    """
+
+    if "num_experts" in model.config:
+        raise ValueError("this official recipe requires Qwen3.5 Dense mathematics")
+    _optional(model, recipe)
+    quantized = sources["quantized"]
+    for name, parameter in model.parameters.items():
+        if not parameter.projection or name.startswith(("vision/", "mtp/", "dflash")):
+            continue
+        source = model.source(name, quantized)
+        format = trellis_format(source)
+        if format is None:
+            _assign(recipe, name, vocabulary if "/layers/" not in name else Q5)
+            continue
+        recipe.assign(name, format=format, method=import_exl3, source=source)
+
+
+def qwen3_8_27b_exl3(model, recipe, sources):
+    _exl3_dense(model, recipe, sources, Q8)
+
+
 RECIPES = {
     "qwen3_6_27b": qwen3_6_27b,
     "qwen3_6_27b_nvfp4": qwen3_6_27b_nvfp4,
     "qwen3_8_27b": qwen3_8_27b,
     "qwen3_8_27b_nvfp4": qwen3_8_27b_nvfp4,
+    "qwen3_8_27b_exl3": qwen3_8_27b_exl3,
     "qwen3_6_35b_a3b": qwen3_6_35b_a3b,
 }

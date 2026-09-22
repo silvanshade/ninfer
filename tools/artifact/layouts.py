@@ -16,6 +16,7 @@ from typing import Sequence
 
 from .formats import (
     DirectFormat,
+    Exl3Format,
     Fp8RowFormat,
     Nvfp4Format,
     NumericFormat,
@@ -77,6 +78,20 @@ class RowScaleGeometry:
     payload_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class Exl3TileGeometry:
+    n: int
+    k: int
+    bits: int
+    code_row_bytes: int
+    code_plane_bytes: int
+    suh_offset: int
+    suh_bytes: int
+    svh_offset: int
+    svh_bytes: int
+    payload_bytes: int
+
+
 CONTIGUOUS_LE_V1 = Layout("contiguous_le_v1", 256, frozenset(("bf16", "fp32", "int32")))
 ROW_SPLIT_K128_V1 = Layout(
     "row_split_k128_v1",
@@ -93,6 +108,11 @@ ROW_SCALE_V1 = Layout(
     256,
     frozenset(("fp8_e4m3fn_row_bf16",)),
 )
+EXL3_TILE_V1 = Layout(
+    "exl3_tile_v1",
+    256,
+    frozenset(("exl3_k3_mul1", "exl3_k4_mul1")),
+)
 
 LAYOUTS = MappingProxyType(
     {
@@ -102,6 +122,7 @@ LAYOUTS = MappingProxyType(
             ROW_SPLIT_K128_V1,
             BLOCK_SCALE_K16_M128X4_V1,
             ROW_SCALE_V1,
+            EXL3_TILE_V1,
         )
     }
 )
@@ -246,6 +267,39 @@ def row_scale_geometry(
     )
 
 
+def exl3_tile_geometry(
+    format: str | Exl3Format, shape: Sequence[int]
+) -> Exl3TileGeometry:
+    spec = _format(format)
+    if not isinstance(spec, Exl3Format):
+        raise ValueError("exl3_tile_v1 requires a trellis format")
+    n, k = _shape(shape, rank=2)
+    # The tile grid is 16-wide, but reconstruction rotates both axes in 128-element blocks, so a
+    # matrix whose dimensions are not multiples of 128 has no defined weight at all.
+    if n % 128 != 0 or k % 128 != 0:
+        raise ValueError("exl3_tile_v1 requires N and K divisible by 128")
+    # A 16x16 tile holds 16 * bits uint16 words, so the codes cost N * K * bits / 8. The two
+    # Hadamard vectors follow: suh over the input columns, svh over the output rows.
+    code_row_bytes = k * spec.bits // 8
+    code_plane_bytes = n * code_row_bytes
+    suh_offset = align_up(code_plane_bytes, PLANE_ALIGNMENT)
+    suh_bytes = k * 2
+    svh_offset = suh_offset + align_up(suh_bytes, PLANE_ALIGNMENT)
+    svh_bytes = n * 2
+    return Exl3TileGeometry(
+        n=n,
+        k=k,
+        bits=spec.bits,
+        code_row_bytes=code_row_bytes,
+        code_plane_bytes=code_plane_bytes,
+        suh_offset=suh_offset,
+        suh_bytes=suh_bytes,
+        svh_offset=svh_offset,
+        svh_bytes=svh_bytes,
+        payload_bytes=svh_offset + svh_bytes,
+    )
+
+
 def encoded_size(
     layout: str | Layout,
     format: str | NumericFormat,
@@ -276,4 +330,8 @@ def encoded_size(
         if not isinstance(numeric_spec, Fp8RowFormat):
             raise ValueError("row_scale_v1 requires a row-scaled FP8 format")
         return row_scale_geometry(numeric_spec, shape).payload_bytes
+    if layout_spec is EXL3_TILE_V1:
+        if not isinstance(numeric_spec, Exl3Format):
+            raise ValueError("exl3_tile_v1 requires a trellis format")
+        return exl3_tile_geometry(numeric_spec, shape).payload_bytes
     raise ValueError(f"unsupported tensor layout: {layout_spec.name!r}")

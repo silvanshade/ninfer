@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <variant>
+#include <vector>
 
 namespace ninfer::ops {
 
@@ -26,7 +27,15 @@ struct PairedProjectionWeights {
     Weight first, second;
 };
 
-using ProjectionWeights = std::variant<SingleProjectionWeight, PairedProjectionWeights>;
+// Parents in logical row order, one GEMM each. An EXL3 trellis carries its own input rotation, so
+// projections the checkpoint stored apart cannot share a parent; consecutive projections sliced
+// from one stored trellis arrive as that single complete parent.
+struct SeparateProjectionWeights {
+    std::vector<Weight> parts;
+};
+
+using ProjectionWeights =
+    std::variant<SingleProjectionWeight, PairedProjectionWeights, SeparateProjectionWeights>;
 
 // Prepare the existing native forms; no device allocation, upload, execution or graph rewrite.
 // Runtime shape/phase choices and scratch remain with the actual calling Op.
@@ -46,8 +55,9 @@ using ProjectionWeights = std::variant<SingleProjectionWeight, PairedProjectionW
                                                                const WeightInput& z);
 [[nodiscard]] ProjectionWeights prepare_gdn_gating_proj_weights(const WeightInput& a,
                                                                 const WeightInput& b);
-[[nodiscard]] SingleProjectionWeight prepare_linear_swiglu_weight(const WeightInput& gate,
-                                                                  const WeightInput& up);
+// A joined gate/up parent is Single; separately stored EXL3 gate and up trellises are Separate.
+[[nodiscard]] ProjectionWeights prepare_linear_swiglu_weight(const WeightInput& gate,
+                                                             const WeightInput& up);
 [[nodiscard]] SparseMoeWeights
 prepare_sparse_moe_weights(const WeightInput& router, const WeightInput& shared_score,
                            std::span<const WeightInput> expert_gate_up,

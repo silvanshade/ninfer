@@ -240,8 +240,8 @@ void native_uses() {
     const WeightParent parent{geometry, bytes.data(), 8.0F};
     const WeightView gate{{64, 64}, {{&parent, 0, 4096}}};
     const WeightView up{{64, 64}, {{&parent, 4096, 8192}}};
-    const auto joined = ops::prepare_linear_swiglu_weight({gate, ops::LinearPolicy::AllowA4, 2.0F},
-                                                          {up, ops::LinearPolicy::AllowA8, 2.0F});
+    const auto joined = std::get<ops::SingleProjectionWeight>(ops::prepare_linear_swiglu_weight(
+        {gate, ops::LinearPolicy::AllowA4, 2.0F}, {up, ops::LinearPolicy::AllowA8, 2.0F}));
     require(joined.policy == ops::LinearPolicy::AllowA8 && joined.weight.payload == bytes.data() &&
                 joined.weight.n == 128 && joined.weight.weight_scale_divisor == 8.0F &&
                 joined.weight.input_scale_divisor == 2.0F,
@@ -251,8 +251,8 @@ void native_uses() {
         const auto no_aux = ops::prepare_linear_weight({full, policy});
         require(no_aux.policy == policy && no_aux.weight.payload == bytes.data(),
                 "non-A4 NVFP4 use required an unused activation divisor");
-        const auto mixed = ops::prepare_linear_swiglu_weight(
-            {gate, ops::LinearPolicy::AllowA4, 2.0F}, {up, policy});
+        const auto mixed = std::get<ops::SingleProjectionWeight>(ops::prepare_linear_swiglu_weight(
+            {gate, ops::LinearPolicy::AllowA4, 2.0F}, {up, policy}));
         require(mixed.policy == policy, "combined use required an unused child auxiliary");
         rejects<std::invalid_argument>(
             [&] { (void)ops::prepare_linear_weight({full, policy, 0.0F}); },
@@ -261,8 +261,8 @@ void native_uses() {
     rejects<std::invalid_argument>(
         [&] { (void)ops::prepare_linear_weight({full, ops::LinearPolicy::AllowA4}); },
         "A4 NVFP4 use accepted a missing activation divisor");
-    const auto a16 = ops::prepare_linear_swiglu_weight({gate, ops::LinearPolicy::A16Only, 2.0F},
-                                                       {up, ops::LinearPolicy::AllowA4, 3.0F});
+    const auto a16 = std::get<ops::SingleProjectionWeight>(ops::prepare_linear_swiglu_weight(
+        {gate, ops::LinearPolicy::A16Only, 2.0F}, {up, ops::LinearPolicy::AllowA4, 3.0F}));
     require(a16.policy == ops::LinearPolicy::A16Only && a16.weight.input_scale_divisor == 2.0F,
             "A16-only use intersection rejected independent unused activation divisors");
     const auto second = ops::prepare_linear_weight({full, ops::LinearPolicy::A16Only, 3.0F});
@@ -291,6 +291,50 @@ void native_uses() {
                                                     {long_up, ops::LinearPolicy::A16Only, 2.0F});
         },
         "combined coverage hid an incorrect gate/up boundary");
+}
+
+// A trellis parent carries its own input rotation, so separately stored parents stay separate
+// while consecutive projections sliced from one stored trellis arrive as that single parent.
+void separate_trellis_uses() {
+    const auto trellis = [](std::uint64_t rows, std::uint64_t columns) {
+        const std::array<std::uint64_t, 2> shape{rows, columns};
+        const auto geometry = weight_geometry(QType::EXL3_K1_MUL1, QuantLayout::Exl3Tile, shape);
+        return std::pair{geometry, std::vector<std::byte>(geometry.bytes)};
+    };
+    auto [gate_geometry, gate_bytes] = trellis(256, 128);
+    auto [up_geometry, up_bytes]     = trellis(256, 128);
+    const WeightParent gate_parent{gate_geometry, gate_bytes.data(), 0.0F};
+    const WeightParent up_parent{up_geometry, up_bytes.data(), 0.0F};
+    const WeightView gate{{256, 128}, {{&gate_parent, 0, 256 * 128}}};
+    const WeightView up{{256, 128}, {{&up_parent, 0, 256 * 128}}};
+    const auto mlp = ops::prepare_linear_swiglu_weight({gate}, {up});
+    const auto* pair = std::get_if<ops::SeparateProjectionWeights>(&mlp);
+    require(pair && pair->parts.size() == 2 && pair->parts[0].payload == gate_bytes.data() &&
+                pair->parts[1].payload == up_bytes.data() && pair->parts[0].n == 256 &&
+                pair->parts[0].qhigh != nullptr && pair->parts[0].scales != nullptr,
+            "separately stored gate/up trellises were not kept as ordered separate parents");
+
+    auto [qkv_geometry, qkv_bytes] = trellis(10240, 5120);
+    auto [z_geometry, z_bytes]     = trellis(6144, 5120);
+    const WeightParent qkv_parent{qkv_geometry, qkv_bytes.data(), 0.0F};
+    const WeightParent z_parent{z_geometry, z_bytes.data(), 0.0F};
+    const WeightView query{{2048, 5120}, {{&qkv_parent, 0, 2048 * 5120}}};
+    const WeightView key{{2048, 5120}, {{&qkv_parent, 2048 * 5120, 4096 * 5120}}};
+    const WeightView value{{6144, 5120}, {{&qkv_parent, 4096 * 5120, 10240 * 5120}}};
+    const WeightView z{{6144, 5120}, {{&z_parent, 0, 6144 * 5120}}};
+    const auto gdn   = ops::prepare_gdn_input_proj_weights({query}, {key}, {value}, {z});
+    const auto* parts = std::get_if<ops::SeparateProjectionWeights>(&gdn);
+    require(parts && parts->parts.size() == 2 && parts->parts[0].n == 10240 &&
+                parts->parts[0].payload == qkv_bytes.data() && parts->parts[1].n == 6144 &&
+                parts->parts[1].payload == z_bytes.data(),
+            "GDN q/k/v slices of one trellis did not join, or z joined them");
+
+    // A part must be a whole trellis parent: a slice cannot run without the rest of its rows.
+    const WeightView half_gate{{128, 128}, {{&gate_parent, 0, 128 * 128}}};
+    const WeightView half_up{{128, 128}, {{&up_parent, 0, 128 * 128}}};
+    rejects<std::invalid_argument>(
+        [&] { (void)ops::prepare_linear_swiglu_weight({half_gate}, {half_up}); },
+        "a partial trellis parent was accepted as a separate part");
 }
 
 void invalid_model_data() {
@@ -325,6 +369,7 @@ int main() {
     try {
         logical_data_and_instances();
         native_uses();
+        separate_trellis_uses();
         invalid_model_data();
         std::cout << "model config, binding, resources and Use checks passed\n";
         return 0;

@@ -5,8 +5,10 @@
 #include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_swiglu.h"
 #include "ninfer/ops/residual_add.h"
+#include "ninfer/ops/separate_projection.h"
 #include "ninfer/ops/silu_mul.h"
 
+#include <array>
 #include <stdexcept>
 
 namespace ninfer::models::qwen3_5::execution {
@@ -19,15 +21,30 @@ std::size_t ffn_workspace_bytes(const FfnParameters& parameters, std::int32_t fi
                                                         moe->routed_down.qtype, first, last);
     }
     const auto& p    = std::get<DenseParameters>(parameters);
-    const auto& gu   = p.gate_up.weight;
     const auto& down = p.down.weight;
     WorkspaceLayoutBuilder layout;
+    if (const auto* separate = std::get_if<ops::SeparateProjectionWeights>(&p.gate_up)) {
+        // Both trellises write one materialized [gate; up] plane, then SwiGLU, then down.
+        const auto rows = separate->parts.front().n * 2;
+        (void)layout.alloc(DType::BF16, {rows, last});
+        {
+            auto scope = layout.scope();
+            (void)layout.alloc_bytes(
+                ops::separate_projection_workspace_capacity_bytes(separate->parts, first, last));
+        }
+        (void)layout.alloc(DType::BF16, {rows / 2, last});
+        (void)layout.alloc_bytes(ops::linear_add_workspace_capacity_bytes(
+            down.qtype, down.n, down.k, p.down.policy, first, last));
+        return layout.peak_bytes(1);
+    }
+    const auto& gate_up = std::get<LinearParameters>(p.gate_up);
+    const auto& gu      = gate_up.weight;
     if (mtp) {
         (void)layout.alloc(DType::BF16, {gu.n, last});
         {
             auto scope = layout.scope();
             (void)layout.alloc_bytes(ops::linear_workspace_capacity_bytes(
-                gu.qtype, gu.n, gu.k, p.gate_up.policy, first, last));
+                gu.qtype, gu.n, gu.k, gate_up.policy, first, last));
         }
         (void)layout.alloc(DType::BF16, {gu.n / 2, last});
         (void)layout.alloc(DType::BF16, {down.n, last});
@@ -38,7 +55,7 @@ std::size_t ffn_workspace_bytes(const FfnParameters& parameters, std::int32_t fi
         {
             auto scope = layout.scope();
             (void)layout.alloc_bytes(ops::linear_swiglu_workspace_capacity_bytes(
-                gu.qtype, gu.n, gu.k, p.gate_up.policy, first, last));
+                gu.qtype, gu.n, gu.k, gate_up.policy, first, last));
         }
         {
             auto scope = layout.scope();
@@ -63,13 +80,28 @@ void ffn(const Tensor& hidden, const FfnParameters& parameters, Tensor& residual
         return;
     }
     const auto& p    = std::get<DenseParameters>(parameters);
-    const auto& gu   = p.gate_up.weight;
     const auto& down = p.down.weight;
+    if (const auto* separate = std::get_if<ops::SeparateProjectionWeights>(&p.gate_up)) {
+        const auto rows = separate->parts.front().n * 2;
+        Tensor gate_up  = workspace.alloc(DType::BF16, {rows, columns});
+        {
+            auto call = workspace.scope();
+            std::array outputs{gate_up};
+            ops::separate_projection(hidden, separate->parts, outputs, workspace, stream);
+        }
+        Tensor activation = workspace.alloc(DType::BF16, {rows / 2, columns});
+        ops::silu_mul(gate_up.slice(0, 0, rows / 2), gate_up.slice(0, rows / 2, rows / 2),
+                      activation, stream);
+        ops::linear_add(activation, down, residual, p.down.policy, workspace, stream);
+        return;
+    }
+    const auto& gate_up_parameters = std::get<LinearParameters>(p.gate_up);
+    const auto& gu                 = gate_up_parameters.weight;
     if (mtp) {
         Tensor gate_up = workspace.alloc(DType::BF16, {gu.n, columns});
         {
             auto call = workspace.scope();
-            ops::linear(hidden, gu, gate_up, p.gate_up.policy, workspace, stream);
+            ops::linear(hidden, gu, gate_up, gate_up_parameters.policy, workspace, stream);
         }
         Tensor activation = workspace.alloc(DType::BF16, {gu.n / 2, columns});
         ops::silu_mul(gate_up.slice(0, 0, gu.n / 2), gate_up.slice(0, gu.n / 2, gu.n / 2),
@@ -82,7 +114,7 @@ void ffn(const Tensor& hidden, const FfnParameters& parameters, Tensor& residual
     Tensor activation = workspace.alloc(DType::BF16, {gu.n / 2, columns});
     {
         auto call = workspace.scope();
-        ops::linear_swiglu(hidden, gu, activation, p.gate_up.policy, workspace, stream);
+        ops::linear_swiglu(hidden, gu, activation, gate_up_parameters.policy, workspace, stream);
     }
     ops::linear_add(activation, down, residual, p.down.policy, workspace, stream);
 }

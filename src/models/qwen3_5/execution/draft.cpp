@@ -348,7 +348,8 @@ void propose_dflash2_batch(DFlashBatchContext& state, qwen3_5::DFlashDecodeState
                 Tensor intermediate_flat =
                     intermediate.view({dimension(config.intermediate_size), columns});
                 project_swiglu(branch.prepared.view({dimension(target.hidden_size), columns}),
-                               layer.mlp.gate_up, intermediate_flat, work, stream);
+                               std::get<LinearParameters>(layer.mlp.gate_up), intermediate_flat,
+                               work, stream);
                 finish_dynamic_branch(state.execution, intermediate, layer.mlp.down,
                                       *layer.mlp_conv, branch.finish_delta, residual);
             }
@@ -527,8 +528,9 @@ void propose_batch_impl(DFlashBatchContext& state, qwen3_5::DFlashDecodeState& f
                 auto roots = workspace::dflash_mlp(state.execution.work, target, config, columns);
                 ops::rmsnorm(residual, weight.post_attention_norm, config.rms_norm_eps, false,
                              roots.hidden, state.execution.device.stream);
-                project_swiglu(roots.hidden, weight.mlp.gate_up, roots.intermediate,
-                               state.execution.work, state.execution.device.stream);
+                project_swiglu(roots.hidden, std::get<LinearParameters>(weight.mlp.gate_up),
+                               roots.intermediate, state.execution.work,
+                               state.execution.device.stream);
                 project_add(roots.intermediate, weight.mlp.down, residual, state.execution.work,
                             state.execution.device.stream);
             }

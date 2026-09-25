@@ -2,7 +2,9 @@
 
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/rope.h"
+#include "ninfer/ops/separate_projection.h"
 
+#include <array>
 #include <stdexcept>
 
 namespace ninfer::models::qwen3_5::execution {
@@ -29,6 +31,9 @@ std::size_t attention_projection_workspace_bytes(const AttentionParameters& para
         return ops::attn_input_proj_workspace_capacity_bytes(weight.qtype, weight.n, weight.k,
                                                              single->policy, first, last);
     }
+    if (const auto* separate = std::get_if<ops::SeparateProjectionWeights>(&parameters.projection)) {
+        return ops::separate_projection_workspace_capacity_bytes(separate->parts, first, last);
+    }
     return 0;
 }
 
@@ -37,6 +42,11 @@ void attention_projection(const Tensor& hidden, const AttentionParameters& param
                           WorkspaceArena& workspace, cudaStream_t stream) {
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
         ops::attn_input_proj(hidden, pair->first, pair->second, query, gate, key, value, stream);
+    } else if (const auto* separate =
+                   std::get_if<ops::SeparateProjectionWeights>(&parameters.projection)) {
+        // Parents follow the stored row order query, key, gate, value.
+        std::array outputs{query, key, gate, value};
+        ops::separate_projection(hidden, separate->parts, outputs, workspace, stream);
     } else {
         const auto& single = std::get<LinearParameters>(parameters.projection);
         ops::attn_input_proj(hidden, single.weight, query, gate, key, value, single.policy,

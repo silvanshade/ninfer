@@ -23,7 +23,8 @@ using LinearParameters = ops::SingleProjectionWeight;
 }
 
 struct DenseParameters {
-    LinearParameters gate_up;
+    // Single joined gate/up parent, or Separate gate and up trellises (EXL3).
+    ops::ProjectionWeights gate_up;
     LinearParameters down;
 };
 

@@ -114,6 +114,8 @@ public:
     }
 
     ops::SparseMoeHints prefetch(const ops::ProjectionWeights& projection, WeightId query) const {
+        // A trellis has no row-major code plane to prefetch.
+        if (std::holds_alternative<ops::SeparateProjectionWeights>(projection)) { return {}; }
         const auto* single = std::get_if<LinearParameters>(&projection);
         const auto& weight =
             single ? single->weight : std::get<ops::PairedProjectionWeights>(projection).first;
@@ -236,6 +238,9 @@ public:
                     result.key_norm      = tensor(a.key_norm);
                     result.output        = linear(a.output);
                     result.mlp           = dense(layer.mlp);
+                    if (!std::holds_alternative<LinearParameters>(result.mlp.gate_up)) {
+                        throw std::invalid_argument("draft MLP requires one joined gate/up parent");
+                    }
                     if (layer.attention_conv) {
                         result.attention_conv = convolution(*layer.attention_conv);
                     }

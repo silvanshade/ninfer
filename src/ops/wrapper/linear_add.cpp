@@ -6,6 +6,7 @@
 #include "ops/linear/fp8/fp8_format.h"
 #include "ops/linear/nvfp4/nvfp4_config.h"
 #include "ops/linear/nvfp4/nvfp4_format.h"
+#include "ops/linear/exl3/exl3_dispatch.h"
 #include "ops/linear_add/fp8/fp8_linear_add_plan.h"
 #include "ops/linear_add/nvfp4/nvfp4_linear_add_plan.h"
 #include "ops/linear_add/q4/q4_linear_add_dispatch.h"
@@ -96,6 +97,9 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
     if (min_tokens <= 0 || max_tokens < min_tokens) {
         throw std::invalid_argument("linear_add workspace: invalid token interval");
     }
+    if (detail::is_exl3(qtype)) {
+        return detail::exl3_linear_workspace_capacity_bytes(output_rows, input_rows, max_tokens);
+    }
     if (qtype == QType::BF16) {
         (void)detail::bf16_linear_add_select(output_rows, input_rows, min_tokens);
         (void)detail::bf16_linear_add_select(output_rows, input_rows, max_tokens);
@@ -154,6 +158,11 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
     require_tensor(residual_out, DType::BF16, w.n, t, "residual_out");
     if (overlaps(x, residual_out)) {
         throw std::invalid_argument("linear_add: x and residual_out must not overlap");
+    }
+    if (detail::is_exl3(w.qtype)) {
+        // The trellis GEMM ends in its own FP32 store, which adds the residual in place.
+        detail::exl3_linear(x, w, residual_out, &residual_out, ws, stream);
+        return;
     }
 
     if (w.qtype == QType::BF16) {

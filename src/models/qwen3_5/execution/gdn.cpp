@@ -2,8 +2,10 @@
 
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
+#include "ninfer/ops/separate_projection.h"
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 
 namespace ninfer::models::qwen3_5::execution {
@@ -18,12 +20,19 @@ std::size_t gdn_projection_workspace_bytes(const GdnParameters& parameters, std:
         return ops::gdn_input_proj_workspace_capacity_bytes(w.qtype, w.n, w.k, single->policy,
                                                             first, last);
     }
+    if (const auto* separate = std::get_if<ops::SeparateProjectionWeights>(&parameters.projection)) {
+        return ops::separate_projection_workspace_capacity_bytes(separate->parts, first, last);
+    }
     return 0;
 }
 
 std::size_t gdn_snapshot_workspace_bytes(const GdnParameters& parameters, const GdnConfig& config,
                                          std::int32_t batch, std::int32_t first_width,
                                          std::int32_t last_width) {
+    if (const auto* separate = std::get_if<ops::SeparateProjectionWeights>(&parameters.projection)) {
+        return ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
+            separate->parts, batch, first_width, last_width);
+    }
     const auto* single = std::get_if<LinearParameters>(&parameters.projection);
     std::size_t bytes;
     if (single && single->weight.qtype != QType::Q8_G32_FP16) {
@@ -43,6 +52,11 @@ std::size_t gdn_snapshot_workspace_bytes(const GdnParameters& parameters, const 
 std::size_t gdn_record_workspace_bytes(const GdnParameters& parameters, const GdnConfig& config,
                                        std::int32_t batch, std::int32_t first_width,
                                        std::int32_t last_width) {
+    if (const auto* separate = std::get_if<ops::SeparateProjectionWeights>(&parameters.projection)) {
+        return std::max(std::size_t{1},
+                        ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
+                            separate->parts, batch, first_width, last_width));
+    }
     const auto* single = std::get_if<LinearParameters>(&parameters.projection);
     std::size_t bytes;
     if (single && single->weight.qtype != QType::Q8_G32_FP16) {
@@ -62,6 +76,10 @@ void gdn_projection(const Tensor& hidden, const GdnParameters& parameters, Tenso
                     WorkspaceArena& workspace, cudaStream_t stream) {
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
         ops::gdn_input_proj(hidden, pair->first, pair->second, qkv, z, stream);
+    } else if (const auto* separate =
+                   std::get_if<ops::SeparateProjectionWeights>(&parameters.projection)) {
+        std::array outputs{qkv, z};
+        ops::separate_projection(hidden, separate->parts, outputs, workspace, stream);
     } else {
         const auto& single = std::get<LinearParameters>(parameters.projection);
         ops::gdn_input_proj(hidden, single.weight, qkv, z, single.policy, workspace, stream);
@@ -95,6 +113,11 @@ void gdn_projection_snapshot(const Tensor& hidden, const GdnParameters& paramete
         ops::gdn_input_proj_conv_snapshot(hidden, pair->first, pair->second, parameters.convolution,
                                           conv_states, valid_columns, initial_slots,
                                           destination_slots, query, key, value, z, scratch, stream);
+    } else if (const auto* separate =
+                   std::get_if<ops::SeparateProjectionWeights>(&parameters.projection)) {
+        ops::gdn_input_proj_conv_snapshot(hidden, separate->parts, parameters.convolution,
+                                          conv_states, valid_columns, initial_slots,
+                                          destination_slots, query, key, value, z, scratch, stream);
     } else {
         const auto& single = std::get<LinearParameters>(parameters.projection);
         ops::gdn_input_proj_conv_snapshot(
@@ -113,6 +136,11 @@ void gdn_projection_record(const Tensor& hidden, const GdnParameters& parameters
         gdn_record_workspace_bytes(parameters, config, hidden.ne[2], hidden.ne[1], hidden.ne[1])));
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
         ops::gdn_input_proj_conv_record(hidden, pair->first, pair->second, parameters.convolution,
+                                        conv_states, valid_columns, initial_slots, conv_record,
+                                        query, key, value, z, scratch, stream);
+    } else if (const auto* separate =
+                   std::get_if<ops::SeparateProjectionWeights>(&parameters.projection)) {
+        ops::gdn_input_proj_conv_record(hidden, separate->parts, parameters.convolution,
                                         conv_states, valid_columns, initial_slots, conv_record,
                                         query, key, value, z, scratch, stream);
     } else {

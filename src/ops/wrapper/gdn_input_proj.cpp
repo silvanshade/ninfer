@@ -1,5 +1,6 @@
 #include "core/weight.h"
 #include "ninfer/ops/gdn_input_proj.h"
+#include "ninfer/ops/separate_projection.h"
 
 #include "core/layout.h"
 #include "ops/gdn_input_proj/fp8/fp8_gdn_conv_plan.h"
@@ -1021,6 +1022,98 @@ void gdn_input_proj_conv_record(const Tensor& x, const Weight& query_key_value_z
     dispatch_single_parent_record(x, query_key_value_z_weight, conv_weight, conv_states,
                                   valid_columns, initial_state_slots, conv_record, query, key,
                                   value, z, LinearPolicy::A16Only, workspace, stream);
+}
+
+namespace {
+
+constexpr std::int32_t kSeparateHidden     = 5120;
+constexpr std::int32_t kSeparateQueryRows  = 2048;
+constexpr std::int32_t kSeparateKeyRows    = 2048;
+constexpr std::int32_t kSeparateValueRows  = 6144;
+constexpr std::int32_t kSeparateZRows      = 6144;
+constexpr std::int32_t kSeparateChannels   = kSeparateQueryRows + kSeparateKeyRows + kSeparateValueRows;
+
+void project_separate(const Tensor& x_flat, std::span<const Weight> parts, Tensor& qkv_flat,
+                      Tensor& z_flat, WorkspaceArena& workspace, cudaStream_t stream) {
+    std::array outputs{qkv_flat, z_flat};
+    separate_projection(x_flat, parts, outputs, workspace, stream);
+}
+
+} // namespace
+
+std::size_t gdn_input_proj_conv_snapshot_workspace_capacity_bytes(std::span<const Weight> parts,
+                                                                  std::int32_t batch_size,
+                                                                  std::int32_t min_width,
+                                                                  std::int32_t max_width) {
+    require_snapshot_capacity_domain(batch_size, min_width, max_width);
+    const std::int32_t aggregate = batch_size * max_width;
+    return composed_snapshot_capacity(
+        kSeparateChannels, aggregate,
+        separate_projection_workspace_capacity_bytes(parts, batch_size * min_width, aggregate));
+}
+
+std::size_t gdn_input_proj_conv_record_workspace_capacity_bytes(std::span<const Weight> parts,
+                                                                std::int32_t batch_size,
+                                                                std::int32_t min_width,
+                                                                std::int32_t max_width) {
+    require_record_capacity_domain(batch_size, min_width, max_width);
+    return separate_projection_workspace_capacity_bytes(parts, batch_size * min_width,
+                                                        batch_size * max_width);
+}
+
+void gdn_input_proj_conv_snapshot(const Tensor& x, std::span<const Weight> parts,
+                                  const Tensor& conv_weight, Tensor& conv_states,
+                                  const Tensor& valid_columns, const Tensor& initial_state_slots,
+                                  const Tensor& snapshot_base_slots, Tensor& query, Tensor& key,
+                                  Tensor& value, Tensor& z, WorkspaceArena& workspace,
+                                  cudaStream_t stream) {
+    const ConvGeometry geometry = require_snapshot_input(x, kSeparateHidden);
+    require_snapshot_operands(conv_weight, conv_states, valid_columns, initial_state_slots,
+                              snapshot_base_slots, kSeparateChannels, geometry);
+    require_conv_tensor(query, kSeparateQueryRows, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_snapshot", "query");
+    require_conv_tensor(key, kSeparateKeyRows, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_snapshot", "key");
+    require_conv_tensor(value, kSeparateValueRows, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_snapshot", "value");
+    require_conv_tensor(z, kSeparateZRows, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_snapshot", "z");
+    require_snapshot_nonoverlap(x, conv_weight, conv_states, valid_columns, initial_state_slots,
+                                snapshot_base_slots, query, key, value, z, workspace);
+    compose_batched_snapshot(x, conv_weight, conv_states, valid_columns, initial_state_slots,
+                             snapshot_base_slots, query, key, value, z, kSeparateQueryRows,
+                             kSeparateKeyRows, kSeparateValueRows, geometry, workspace, stream,
+                             [&](const Tensor& x_flat, Tensor& projected, Tensor& z_flat) {
+                                 project_separate(x_flat, parts, projected, z_flat, workspace,
+                                                  stream);
+                             });
+}
+
+void gdn_input_proj_conv_record(const Tensor& x, std::span<const Weight> parts,
+                                const Tensor& conv_weight, const Tensor& conv_states,
+                                const Tensor& valid_columns, const Tensor& initial_state_slots,
+                                Tensor& conv_record, Tensor& query, Tensor& key, Tensor& value,
+                                Tensor& z, WorkspaceArena& workspace, cudaStream_t stream) {
+    const ConvGeometry geometry = require_record_input(x, kSeparateHidden);
+    require_record_operands(conv_weight, conv_states, valid_columns, initial_state_slots,
+                            kSeparateChannels, geometry);
+    require_conv_tensor(conv_record, kSeparateChannels, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_record", "conv record");
+    require_conv_tensor(query, kSeparateQueryRows, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_record", "query");
+    require_conv_tensor(key, kSeparateKeyRows, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_record", "key");
+    require_conv_tensor(value, kSeparateValueRows, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_record", "value");
+    require_conv_tensor(z, kSeparateZRows, geometry.width, geometry.batch,
+                        "gdn_input_proj_conv_record", "z");
+    require_record_nonoverlap(x, conv_weight, conv_states, valid_columns, initial_state_slots,
+                              conv_record, query, key, value, z, workspace);
+    compose_record(x, conv_weight, conv_states, valid_columns, initial_state_slots, conv_record,
+                   query, key, value, z, geometry, workspace, stream,
+                   [&](const Tensor& x_flat, Tensor& record_flat, Tensor& z_flat) {
+                       project_separate(x_flat, parts, record_flat, z_flat, workspace, stream);
+                   });
 }
 
 } // namespace ninfer::ops

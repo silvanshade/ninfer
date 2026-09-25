@@ -112,6 +112,30 @@ SingleProjectionWeight single(std::span<const WeightInput> inputs) {
     return {native_weight(view, divisor), policy};
 }
 
+bool trellis(std::span<const WeightInput> inputs) {
+    return exl3_bitrate(inputs.front().weight.parts.front().parent->geometry.format) != 0;
+}
+
+// Each maximal run of inputs that is one contiguous region becomes one part; native_weight() then
+// requires that region to be a complete trellis parent.
+SeparateProjectionWeights separate(std::span<const WeightInput> inputs) {
+    SeparateProjectionWeights out;
+    std::size_t first = 0;
+    while (first < inputs.size()) {
+        std::size_t last = first + 1;
+        while (last < inputs.size() &&
+               contiguous(concatenate_rows(inputs.subspan(first, last + 1 - first)))) {
+            ++last;
+        }
+        const auto part = single(inputs.subspan(first, last - first));
+        require(exl3_bitrate(part.weight.qtype) != 0,
+                "separate projection: every parent must be an EXL3 trellis");
+        out.parts.push_back(part.weight);
+        first = last;
+    }
+    return out;
+}
+
 ProjectionWeights input_projection(std::span<const WeightInput, 4> inputs, bool attention) {
     const auto& q      = matrix(inputs[0]);
     const auto& k      = matrix(inputs[1]);
@@ -140,6 +164,7 @@ ProjectionWeights input_projection(std::span<const WeightInput, 4> inputs, bool 
         return result;
     }
     require(dense, "input projection: unsupported multi-parent geometry");
+    if (trellis(inputs)) { return separate(inputs); }
     const auto first  = single(inputs.first<2>());
     const auto second = single(inputs.last<2>());
     require(first.weight.qtype == QType::Q4_G64_FP16 && second.weight.qtype == QType::Q5_G64_FP16,
@@ -205,10 +230,10 @@ ProjectionWeights prepare_gdn_gating_proj_weights(const WeightInput& a, const We
     return PairedProjectionWeights{first.weight, second.weight};
 }
 
-SingleProjectionWeight prepare_linear_swiglu_weight(const WeightInput& gate,
-                                                    const WeightInput& up) {
+ProjectionWeights prepare_linear_swiglu_weight(const WeightInput& gate, const WeightInput& up) {
     require(matrix(gate) == matrix(up), "SwiGLU gate and up geometry differs");
     const std::array inputs{gate, up};
+    if (!contiguous(concatenate_rows(inputs)) && trellis(inputs)) { return separate(inputs); }
     return single(inputs);
 }
 
@@ -238,7 +263,8 @@ prepare_sparse_moe_weights(const WeightInput& router, const WeightInput& shared_
     const auto router_bank  = single(router_inputs);
     const auto gate_up_bank = single(expert_gate_up);
     const auto down_bank    = single(expert_down);
-    const auto shared       = prepare_linear_swiglu_weight(shared_gate, shared_up);
+    const std::array shared_inputs{shared_gate, shared_up};
+    const auto shared       = single(shared_inputs);
     const auto down         = prepare_linear_weight(shared_down);
     const auto gate_format  = gate_up_bank.weight.qtype;
     const auto down_format  = down_bank.weight.qtype;

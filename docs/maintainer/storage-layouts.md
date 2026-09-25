@@ -421,6 +421,10 @@ when the chosen fused implementation consumes their complete union, it receives 
 native weight. For a trellis that union is rarely available, because one parent holds one `suh`
 and a quantizer derives `suh` per tensor: projections whose input vectors differ word for word are
 separate parents, and a producer that packs them anyway is writing a matrix neither one decodes to.
+Such a projection prepares as `SeparateProjectionWeights`: its complete parents in logical row
+order, each run as one GEMM into its row slice of the output (`ops::separate_projection`). A
+consecutive run of projections sliced from one stored trellis, such as the GDN query, key and value
+rows of `in_proj_qkv`, is that complete parent and runs once.
 
 Offline codecs can produce a standalone slice with its own plane offsets. The loader does not
 perform that transformation. An execution implementation that accepts additional view forms must

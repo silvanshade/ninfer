@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace ninfer::ops {
 
@@ -234,6 +235,37 @@ void gdn_input_proj_conv_record(const Tensor& x, const Weight& query_key_value_z
 
 /** Applies the A16-only single-parent record-producing form. */
 void gdn_input_proj_conv_record(const Tensor& x, const Weight& query_key_value_z_weight,
+                                const Tensor& conv_weight, const Tensor& conv_states,
+                                const Tensor& valid_columns, const Tensor& initial_state_slots,
+                                Tensor& conv_record, Tensor& query, Tensor& key, Tensor& value,
+                                Tensor& z, WorkspaceArena& workspace, cudaStream_t stream);
+
+/**
+ * Separately stored parents (EXL3 trellises) in q/k/value/z logical row order, covering the 27B
+ * geometry: x [5120,W,B], query/key [2048,W,B], value/z [6144,W,B], conv_weight [10240,4]. Each
+ * parent runs as its own SeparateProjection GEMM over all B*W columns into one BF16 projected
+ * plane (the caller's conv_record for the record form), followed by the shared projected
+ * convolution. Domains, effects and aliasing follow the single-parent forms above.
+ */
+[[nodiscard]] std::size_t
+gdn_input_proj_conv_snapshot_workspace_capacity_bytes(std::span<const Weight> parts,
+                                                      std::int32_t batch_size,
+                                                      std::int32_t min_width,
+                                                      std::int32_t max_width);
+
+[[nodiscard]] std::size_t
+gdn_input_proj_conv_record_workspace_capacity_bytes(std::span<const Weight> parts,
+                                                    std::int32_t batch_size, std::int32_t min_width,
+                                                    std::int32_t max_width);
+
+void gdn_input_proj_conv_snapshot(const Tensor& x, std::span<const Weight> parts,
+                                  const Tensor& conv_weight, Tensor& conv_states,
+                                  const Tensor& valid_columns, const Tensor& initial_state_slots,
+                                  const Tensor& snapshot_base_slots, Tensor& query, Tensor& key,
+                                  Tensor& value, Tensor& z, WorkspaceArena& workspace,
+                                  cudaStream_t stream);
+
+void gdn_input_proj_conv_record(const Tensor& x, std::span<const Weight> parts,
                                 const Tensor& conv_weight, const Tensor& conv_states,
                                 const Tensor& valid_columns, const Tensor& initial_state_slots,
                                 Tensor& conv_record, Tensor& query, Tensor& key, Tensor& value,

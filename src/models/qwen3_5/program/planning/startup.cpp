@@ -618,7 +618,8 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                         prepare();
                         matrix(layout, DType::BF16, dimension(draft->intermediate_size), tokens);
                         for (const auto& block : parameters.draft->layers) {
-                            const auto& p = block.mlp.gate_up;
+                            const auto& p =
+                                std::get<execution::LinearParameters>(block.mlp.gate_up);
                             scratch(layout, ops::linear_swiglu_workspace_capacity_bytes(
                                                 p.weight.qtype, p.weight.n, p.weight.k, p.policy,
                                                 tokens, tokens));
@@ -669,7 +670,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                     auto mlp = layout.scope();
                     (void)workspace::dflash_mlp(layout, config, *draft, tokens);
                     for (const auto& block : parameters.draft->layers) {
-                        const auto& p = block.mlp.gate_up;
+                        const auto& p = std::get<execution::LinearParameters>(block.mlp.gate_up);
                         scratch(layout, ops::linear_swiglu_workspace_capacity_bytes(
                                             p.weight.qtype, p.weight.n, p.weight.k, p.policy,
                                             tokens, tokens));

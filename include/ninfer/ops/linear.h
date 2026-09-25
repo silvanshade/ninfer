@@ -80,7 +80,12 @@ enum class LinearPolicy : std::uint8_t {
  * `[5120,6144]`, and `[256,5120]` at every positive T. Text and MTP packed-weight problems accept
  * every positive column extent T. Registered Vision problems accept raw-patch P in
  * `{4,8,...,131072}` or merged-token V in `[1,32768]`; a matrix column does not inherently
- * represent a text token. FP32 is unsupported.
+ * represent a text token. EXL3 trellis weights (Exl3Tile, EXL3_K1_MUL1 through EXL3_K8_MUL1) run
+ * at any `[N,K]` with N and K multiples of 128 and every positive T, under every policy with A16
+ * compute and FP32 accumulation, rounding once to BF16. Below 256 columns the kernel decodes tiles
+ * in the matmul loop with FP16 operands; from 256 columns, at K of 5120, 6144 or 17408, the weight
+ * is first decoded to BF16 in the original basis and multiplied by a BF16 Tensor Core GEMM, so the
+ * two routes differ by BF16 rounding of the weight. FP32 is unsupported.
  *
  * @par Numerical contract
  * Test fixture code materializes the persistent weight as its logical FP32 dequantized matrix.

@@ -4,6 +4,8 @@
 
 #include <chrono>
 #include <memory>
+#include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -76,6 +78,12 @@ public:
 
     // Artifact-tokenizer raw-text encoding. No chat template or implicit special token is added.
     [[nodiscard]] std::vector<TokenId> tokenize_text(std::string_view text) const;
+
+    // Artifact-tokenizer byte rendering: each id's bytes concatenated in order, special tokens
+    // included and no stop token trimmed. The result is not UTF-8 validated, because a generation
+    // budget can end inside a multi-byte character. An id outside the vocabulary throws
+    // std::invalid_argument.
+    [[nodiscard]] std::string detokenize(std::span<const TokenId> ids) const;
 
     // Returns log p(tokens[i] | tokens[0..i)) for i in [first_target,tokens.size()).
     [[nodiscard]] std::vector<float> score_tokens(std::vector<TokenId> tokens,

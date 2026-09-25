@@ -4,7 +4,8 @@
  *
  * The C++ surface in `ninfer/engine.h` carries `std::` containers, pimpl handles and exceptions,
  * none of which crosses a C ABI. This facade exposes the narrow path a host outside C++ drives:
- * open an artifact, turn text into tokens, and generate greedily from tokens.
+ * open an artifact, turn text into tokens, generate greedily from tokens, and turn tokens back
+ * into bytes.
  *
  * Three rules hold at every entry point. No exception escapes: a failure becomes a status and,
  * when the caller supplies a buffer, a NUL-terminated message. No ownership crosses except the
@@ -22,7 +23,7 @@
 extern "C" {
 #endif
 
-/** Marks the four entry points as exported; everything else in the object stays hidden. */
+/** Marks the five entry points as exported; everything else in the object stays hidden. */
 #if defined(_WIN32)
 #define NINFER_CAPI __declspec(dllexport)
 #else
@@ -114,6 +115,24 @@ NINFER_CAPI ninfer_status ninfer_generate_greedy(ninfer_engine* engine, const in
                                      size_t token_count, uint32_t max_new_tokens,
                                      int32_t* out_tokens, size_t capacity, size_t* out_count,
                                      char* error, size_t error_bytes);
+
+/**
+ * Renders token ids as bytes with the artifact's tokenizer: each id's bytes concatenated in
+ * order, special tokens included and no stop token trimmed.
+ *
+ * The bytes are not UTF-8 validated and not NUL-terminated: a generation budget can end inside a
+ * multi-byte character, and an id's bytes may contain a zero byte, so the caller receives exactly
+ * what the ids encode and the length is the only terminator.
+ *
+ * @param tokens Ids to render; may be null when `token_count` is 0, which renders zero bytes.
+ * @param out_bytes Caller-allocated array of `capacity` bytes; may be null when `capacity` is 0.
+ * @param out_length Required. Receives the byte length produced, whether or not it fit.
+ * @return NINFER_INVALID_ARGUMENT for an id outside the vocabulary; NINFER_BUFFER_TOO_SMALL when
+ *         `capacity` is below `*out_length`, and nothing is written then.
+ */
+NINFER_CAPI ninfer_status ninfer_detokenize(ninfer_engine* engine, const int32_t* tokens,
+                                            size_t token_count, char* out_bytes, size_t capacity,
+                                            size_t* out_length, char* error, size_t error_bytes);
 
 #ifdef __cplusplus
 } // extern "C"

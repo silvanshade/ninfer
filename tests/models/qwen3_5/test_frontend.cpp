@@ -1984,6 +1984,26 @@ int test_utf8_and_hidden_eos(const Frontend& frontend) {
     return failures;
 }
 
+int test_detokenize_bytes(const Frontend& frontend) {
+    using Ids    = std::vector<ninfer::TokenId>;
+    int failures = check(frontend.detokenize(Ids{}).empty(), "an empty id sequence rendered bytes");
+    failures += check(frontend.detokenize(Ids{1, 2}) == "helloSTOPtail",
+                      "added tokens did not render their content in id order");
+    failures += check(frontend.detokenize(Ids{0, 6}) == "x<eos>",
+                      "a terminal stop token was trimmed or a special token was skipped");
+    failures += check(frontend.detokenize(Ids{10, 11}) == "\xe4\xb8",
+                      "a budget-cut multi-byte character was not rendered byte-exact");
+    const std::string text = "helloST x\xe4\xb8\xad<eos>";
+    failures += check(frontend.detokenize(frontend.tokenize_text(text)) == text,
+                      "rendering the encoding of a text did not reproduce its bytes");
+    for (const ninfer::TokenId outside : {-1, 5, 248320}) {
+        failures +=
+            check(throws_invalid_argument([&] { (void)frontend.detokenize(Ids{0, outside}); }),
+                  "an id outside the vocabulary was not rejected as an invalid argument");
+    }
+    return failures;
+}
+
 int test_disabled_vision() {
     auto source = resources();
     source.preprocessor_config_json.clear();
@@ -2248,6 +2268,7 @@ int main() {
     failures += test_sampling_reasoning_boundary(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
+    failures += test_detokenize_bytes(frontend);
     failures += test_media_cache_reuses_immutable_payload();
     failures += test_media_payload_outlives_frontend_cache();
     failures += test_media_live_bytes_follow_last_payload_reference();

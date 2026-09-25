@@ -901,6 +901,22 @@ std::vector<TokenId> Frontend::tokenize_text(std::string_view text) const {
     return impl_->tokenizer->encode(text);
 }
 
+std::string Frontend::detokenize(std::span<const TokenId> ids) const {
+    if (impl_ == nullptr) { throw std::logic_error("frontend is empty"); }
+    const fi::Tokenizer& tokenizer = *impl_->tokenizer;
+    std::string bytes;
+    for (const TokenId id : ids) {
+        // Checked here so an out-of-vocabulary id reaches callers as a rejected argument, not as
+        // the tokenizer's internal range failure.
+        if (!tokenizer.is_valid_token(id)) {
+            throw std::invalid_argument("token id " + std::to_string(id) +
+                                        " is outside the loaded vocabulary");
+        }
+        bytes += tokenizer.decode_token_bytes(id, false);
+    }
+    return bytes;
+}
+
 OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
                                             const StopPolicy& caller_stop,
                                             const OutputOptions& output,

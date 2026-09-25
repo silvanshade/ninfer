@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -71,6 +72,7 @@ public:
     [[nodiscard]] PreparedPrompt prepare_tokens(std::vector<TokenId> token_ids,
                                                 bool allow_prefix_identity = true) const;
     [[nodiscard]] std::vector<TokenId> tokenize_text(std::string_view text) const;
+    [[nodiscard]] std::string detokenize(std::span<const TokenId> ids) const;
     [[nodiscard]] MediaCacheSummary media_cache_summary() const;
     [[nodiscard]] OutputSession
     make_output_session(const PreparedPrompt& prompt, const StopPolicy& caller_stop,

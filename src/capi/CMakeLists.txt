@@ -11,7 +11,7 @@ endif()
 
 if(NINFER_CAPI_SHARED)
   add_library(ninfer_capi SHARED capi.cpp)
-  # Only the four entry points leave the object; the engine's own symbols stay inside it.
+  # Only the five entry points leave the object; the engine's own symbols stay inside it.
   set_target_properties(ninfer_capi PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)

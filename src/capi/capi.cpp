@@ -7,6 +7,7 @@
 #include <exception>
 #include <filesystem>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -146,6 +147,27 @@ ninfer_status ninfer_generate_greedy(ninfer_engine* engine, const std::int32_t* 
 
         auto result = holder->engine.generate(std::move(prompt), std::move(request));
         return deliver(result.generated_token_ids, out_tokens, capacity, out_count);
+    });
+}
+
+ninfer_status ninfer_detokenize(ninfer_engine* engine, const std::int32_t* tokens,
+                                std::size_t token_count, char* out_bytes, std::size_t capacity,
+                                std::size_t* out_length, char* error, std::size_t error_bytes) {
+    if (engine == nullptr || out_length == nullptr || (tokens == nullptr && token_count != 0) ||
+        (out_bytes == nullptr && capacity != 0)) {
+        write_message(error, error_bytes, "ninfer: engine, tokens and out_length are required");
+        return NINFER_INVALID_ARGUMENT;
+    }
+    auto* holder = reinterpret_cast<EngineHolder*>(engine);
+    return guarded(error, error_bytes, [&]() -> ninfer_status {
+        const std::span<const ninfer::TokenId> ids =
+            token_count == 0 ? std::span<const ninfer::TokenId>{}
+                             : std::span<const ninfer::TokenId>(tokens, token_count);
+        const std::string rendered = holder->engine.detokenize(ids);
+        *out_length                = rendered.size();
+        if (rendered.size() > capacity) { return NINFER_BUFFER_TOO_SMALL; }
+        if (!rendered.empty()) { std::memcpy(out_bytes, rendered.data(), rendered.size()); }
+        return NINFER_OK;
     });
 }
 

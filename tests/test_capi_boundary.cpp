@@ -69,5 +69,18 @@ int main() {
                                              0) == NINFER_INVALID_ARGUMENT,
                       "generate accepted a zero token budget");
 
+    // Detokenize holds the same boundary: a null engine is the caller's error, reported with a
+    // NUL-terminated message rather than dereferenced.
+    char rendered = '\xff';
+    std::vector<char> detokenize_message(256, '\xff');
+    failures +=
+        check(ninfer_detokenize(nullptr, &token, 1, &rendered, 1, &count, detokenize_message.data(),
+                                detokenize_message.size()) == NINFER_INVALID_ARGUMENT,
+              "detokenize accepted a null engine");
+    failures += check(std::strlen(detokenize_message.data()) > 0 &&
+                          std::strlen(detokenize_message.data()) < detokenize_message.size(),
+                      "a rejected detokenize left no NUL-terminated message");
+    failures += check(rendered == '\xff', "a rejected detokenize wrote into the output bytes");
+
     return failures == 0 ? 0 : 1;
 }

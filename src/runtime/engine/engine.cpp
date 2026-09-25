@@ -243,6 +243,11 @@ std::vector<TokenId> Engine::tokenize_text(std::string_view text) const {
     return impl_->active->frontend.tokenize_text(text);
 }
 
+std::string Engine::detokenize(std::span<const TokenId> ids) const {
+    if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
+    return impl_->active->frontend.detokenize(ids);
+}
+
 std::vector<float> Engine::score_tokens(std::vector<TokenId> tokens, std::uint32_t first_target) {
     nvtx::ScopedRange score_range(nvtx::Name::Score, nvtx::Category::Scoring,
                                   static_cast<std::uint64_t>(tokens.size()));

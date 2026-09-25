@@ -1,5 +1,6 @@
 #include "ninfer/engine.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -2065,6 +2066,94 @@ int verify_loaded_product(const ninfer::Engine& engine) {
     return 0;
 }
 
+class CancelAfterDeltas final : public ninfer::OutputSink {
+public:
+    explicit CancelAfterDeltas(std::size_t deltas) : threshold_(deltas) {}
+
+    void start(ninfer::GenerationStart) override {}
+
+    void progress(ninfer::PromptProgress) override {}
+
+    void timing(ninfer::GenerationTimingObservation) override {}
+
+    void publish(ninfer::OutputDelta) override {
+        if (++published_ >= threshold_) { requested_ = true; }
+    }
+
+    [[nodiscard]] ninfer::CancellationView view() const {
+        return ninfer::CancellationView([this] { return requested_.load(); });
+    }
+
+private:
+    std::size_t threshold_;
+    std::size_t published_ = 0;
+    std::atomic<bool> requested_{false};
+};
+
+ninfer::PromptInput cancel_retry_turn(const std::optional<std::string>& first_answer) {
+    ninfer::PromptInput input = session_turn("cancel-retry", "Name one prime number.");
+    if (first_answer) {
+        ninfer::ChatMessage assistant;
+        assistant.role = ninfer::ChatRole::Assistant;
+        assistant.parts.push_back(ninfer::MessagePart{
+            .kind = ninfer::MessagePartKind::Text, .text = *first_answer, .media = {}});
+        input.messages.push_back(std::move(assistant));
+        ninfer::ChatMessage user;
+        user.role = ninfer::ChatRole::User;
+        user.parts.push_back(ninfer::MessagePart{
+            .kind  = ninfer::MessagePartKind::Text,
+            .text  = "Now count slowly from one to two hundred, one number per line.",
+            .media = {}});
+        input.messages.push_back(std::move(user));
+    }
+    return input;
+}
+
+// A client that drops a decoding turn and retries it must not lose the session: the cancelled
+// turn consumed the previous turn's continuation, so discarding it on cancel left the retry
+// nothing to reuse.
+int exercise_cancel_retry(const char* artifact, ninfer::SpeculativeBackend backend) {
+    auto options                = engine_options(artifact);
+    options.enable_vision       = false;
+    options.speculative.backend = backend;
+    options.speculative.draft_tokens =
+        backend == ninfer::SpeculativeBackend::Mtp ? options.speculative.draft_tokens : 7U;
+    ninfer::Engine engine(std::move(options));
+
+    const ninfer::GenerationResult first =
+        engine.generate(engine.prepare(cancel_retry_turn(std::nullopt)), fixed_output(8));
+    if (first.generated_token_ids.empty()) {
+        std::cerr << "cancel-retry first turn produced no output\n";
+        return 1;
+    }
+
+    CancelAfterDeltas sink(16);
+    ninfer::GenerationHandle second =
+        engine.submit(engine.prepare(cancel_retry_turn(first.content)), fixed_output(512),
+                      ninfer::OutputConsumerMode::Streaming);
+    const ninfer::GenerationResult cancelled = second.wait(&sink, sink.view());
+    if (cancelled.finish_reason != ninfer::FinishReason::Cancelled ||
+        cancelled.generated_token_ids.empty() || cancelled.generated_token_ids.size() >= 512 ||
+        cancelled.reused_prompt_tokens == 0) {
+        std::cerr << "cancel-retry second turn was not cancelled mid-decode after reuse: reason="
+                  << static_cast<int>(cancelled.finish_reason)
+                  << " output=" << cancelled.generated_token_ids.size()
+                  << " reused=" << cancelled.reused_prompt_tokens << '\n';
+        return 1;
+    }
+
+    const ninfer::GenerationResult retry =
+        engine.generate(engine.prepare(cancel_retry_turn(first.content)), fixed_output(1));
+    if (retry.reused_prompt_tokens < cancelled.reused_prompt_tokens) {
+        std::cerr << "cancelled turn discarded the session context: retry reused="
+                  << retry.reused_prompt_tokens
+                  << " cancelled turn reused=" << cancelled.reused_prompt_tokens
+                  << " prompt=" << retry.prompt.prompt_tokens << '\n';
+        return 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 int exercise_artifact(const char* artifact) {
@@ -2118,6 +2207,10 @@ int exercise_artifact(const char* artifact) {
     if (const int result = exercise_concurrent_resource_settlement(artifact); result != 0) {
         return result;
     }
+    if (const int result = exercise_cancel_retry(artifact, ninfer::SpeculativeBackend::Mtp);
+        result != 0) {
+        return result;
+    }
     return 0;
 }
 
@@ -2166,6 +2259,10 @@ int main() {
         options.context_cache = ninfer::ContextCacheOptions{.enabled = false};
         ninfer::Engine engine(std::move(options));
         result = exercise_stream_observations(engine);
+    } else if (scenario == "cancel-retry") {
+        result = exercise_cancel_retry(artifact, ninfer::SpeculativeBackend::Mtp);
+    } else if (scenario == "cancel-retry-dflash2") {
+        result = exercise_cancel_retry(artifact, ninfer::SpeculativeBackend::DFlash2);
     } else {
         throw std::invalid_argument("unknown prefix integration scenario");
     }

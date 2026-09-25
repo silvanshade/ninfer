@@ -488,11 +488,15 @@ Cancellation 在 Engine worker 的稳定边界生效：
 |---|---|
 | Waiting | 不创建 Program state，直接结束请求 |
 | Materializing | abort resource transition，并采用其完整结果 |
-| Active | 当前 GPU unit 稳定后进入 TerminalPending 并 release |
+| Active，decode 中 | 当前 GPU unit 稳定后进入 TerminalPending；Program 把最后一次已提交的 round 当作 terminal 结算（DFlash context 追到已提交 frontier），然后走 7.1 的 retain 路径 |
+| Active，prefill 中或 capture 未结束 | 当前 GPU unit 稳定后进入 TerminalPending 并 release |
 | PendingBatch | 通过 cancelled row decision 提交或整体 abort |
 | 已 commit、尚未 adopt | 先 adopt 已提交结果，再执行 terminal 路径 |
 
-Cancellation 不修改 in-flight mapping，也不从未完成的 active state 发布 checkpoint。
+Cancellation 不修改 in-flight mapping，也不从未完成的 active state 发布 checkpoint：保留的只是已提交 round
+边界上的完整 continuation。decode 中的请求在 activation 时已经 consume 了上一轮的 private
+continuation；若取消时 release，客户端随后的重试会失去整个 session 的复用。Program 不能在该边界结算时，
+确定性终态仍是 release。
 
 ### 7.3 Request-local rejection
 

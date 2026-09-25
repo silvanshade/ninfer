@@ -1014,6 +1014,28 @@ public:
         return result;
     }
 
+    // A cancelled request that is decoding keeps its context: the Program settles it as though
+    // its last committed round were terminal and finish() catalogues it for the retry that usually
+    // follows. A request the Program cannot settle there is discarded, as abort() does.
+    [[nodiscard]] FinishResult cancel(Program& program, LaneId lane, SequenceHandle sequence) {
+        if (!std::holds_alternative<std::monostate>(transaction_) ||
+            program.has_context_transaction()) {
+            throw std::logic_error("cancellation overlaps an open resource transaction");
+        }
+        if (lanes_.at(lane.value) == LogicalLaneState::Active) {
+            lanes_[lane.value] = LogicalLaneState::TerminalPending;
+        }
+        require_lane(lane, LogicalLaneState::TerminalPending);
+        if (program.retire_cancelled(sequence)) { return finish(program, lane, sequence); }
+        AbortResult aborted = abort(program, lane, sequence);
+        FinishResult released;
+        released.status      = ConsumeStatus::Consumed;
+        released.disposition = FinishDisposition::Released;
+        released.timings     = aborted.timings;
+        released.speculative = std::move(aborted.speculative);
+        return released;
+    }
+
     void apply_commit(std::span<const LaneId> lanes,
                       const typename ModelContract::CommitResult& result) {
         if (lanes.size() != result.row_count) {

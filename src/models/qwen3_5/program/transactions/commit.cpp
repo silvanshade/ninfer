@@ -665,6 +665,49 @@ FinishResult ProgramImpl::finish(SequenceHandle sequence) noexcept {
     return out;
 }
 
+bool ProgramImpl::retire_cancelled(SequenceHandle sequence) noexcept {
+    if (has_context_transaction() || pending_transaction_ || !valid_sequence(sequence)) {
+        return false;
+    }
+    const std::uint32_t lane = ContractAccess::lane(sequence).value;
+    RequestControl& request  = requests[lane];
+    if (request.lifecycle == Lifecycle::Finishable) { return true; }
+    // Only a decoding sequence between committed rounds has an endpoint to publish. A prefilling
+    // sequence, or one whose prompt-frontier capture is still open, keeps the discard path.
+    if (request.lifecycle != Lifecycle::Active || request.prefill) { return false; }
+    SequenceState& state = active_sequence(lane);
+    if (state.ledger_frontier != state.execution_frontier + 1U ||
+        state.text_kv_valid != state.execution_frontier) {
+        return false;
+    }
+    try {
+        // A non-terminal DFlash round leaves the draft context behind the committed frontier and
+        // lets the next round append it. A terminal round appends it at commit; this does the same,
+        // exactly as a forced-token continuation catches up before extending.
+        if (is_masked_draft_backend(speculative_backend) &&
+            state.dflash_context_frontier < state.execution_frontier) {
+            const std::array<std::uint32_t, 1> append_lanes{lane};
+            const std::array<std::uint32_t, 1> append_starts{state.dflash_context_frontier};
+            const std::array<std::uint32_t, 1> append_counts{state.execution_frontier -
+                                                             state.dflash_context_frontier};
+            enqueue_dflash_context_append(append_lanes, append_starts, append_counts);
+            device.synchronize();
+            work.reset();
+            state.dflash_context_frontier = state.execution_frontier;
+            commit_sequence_kv(state, state.text_kv_valid, backend_kv_valid(state));
+        }
+    } catch (...) {
+        try {
+            device.synchronize();
+        } catch (...) {}
+        work.reset();
+        return false;
+    }
+    state.mtp_draft_count = 0;
+    request.lifecycle     = Lifecycle::Finishable;
+    return true;
+}
+
 AbortResult ProgramImpl::abort(SequenceHandle sequence) noexcept {
     AbortResult out;
     if (has_context_transaction() || pending_transaction_ || !valid_sequence(sequence)) {

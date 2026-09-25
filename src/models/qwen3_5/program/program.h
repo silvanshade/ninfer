@@ -928,6 +928,10 @@ public:
            runtime::ExecutionTiming* failed_timing = nullptr);
     [[nodiscard]] DiscardResult abort_pending(PendingBatch&& pending) noexcept;
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;
+    // Settles a decoding sequence cancelled between rounds as though its last committed round had
+    // been terminal, so finish() can catalogue its context. False leaves the sequence unchanged
+    // (prefilling, mid-capture, or not settleable) and the caller aborts it instead.
+    [[nodiscard]] bool retire_cancelled(SequenceHandle sequence) noexcept;
     [[nodiscard]] AbortResult abort(SequenceHandle sequence) noexcept;
     [[nodiscard]] ReleaseResult release_continuation(ContinuationHandle&& continuation) noexcept;
     [[nodiscard]] ReleaseResult release_shared_prefix(SharedPrefixHandle&& shared) noexcept;

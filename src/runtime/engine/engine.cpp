@@ -292,7 +292,8 @@ ModelSamplingDefaults Engine::sampling_defaults() const {
 GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
                                 OutputConsumerMode consumer_mode,
                                 GenerationObservationOptions observation,
-                                std::chrono::steady_clock::time_point pending_deadline) {
+                                std::chrono::steady_clock::time_point pending_deadline,
+                                std::shared_ptr<RoundController> round_controller) {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
     if (impl_->options.purpose != EnginePurpose::Generation) {
         throw std::logic_error("submit requires a Generation Engine");
@@ -351,7 +352,8 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
             } else {
                 auto submission = core->submit(std::move(prompt.impl_->value), prompt_summary,
                                                prepare_seconds, std::move(resolved_options),
-                                               consumer_mode, observation, pending_deadline);
+                                               consumer_mode, observation, pending_deadline,
+                                               std::move(round_controller));
                 return GenerationHandle(std::make_unique<GenerationHandle::Impl>(
                     impl_, std::move(submission), resolved_sampling));
             }

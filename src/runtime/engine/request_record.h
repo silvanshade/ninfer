@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/nvtx.h"
+#include "ninfer/round_control.h"
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
 #include "runtime/contract/resources.h"
@@ -12,6 +13,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -160,6 +162,8 @@ struct RequestRecord {
     PromptSummary prompt_summary;
     double prepare_seconds = 0.0;
     ResolvedRequestOptions options;
+    // Reviews every round of this request before its commit; null when the caller supplied none.
+    std::shared_ptr<RoundController> round_controller;
     const OutputConsumerMode consumer_mode;
     const GenerationObservationOptions observation;
     Clock::time_point deadline;

@@ -4,6 +4,7 @@
 
 #include "core/device.h"
 #include "core/nvtx.h"
+#include "ninfer/round_control.h"
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
 #include "runtime/contract/resources.h"
@@ -168,7 +169,8 @@ public:
     Submission submit(PreparedPrompt prompt, PromptSummary prompt_summary, double prepare_seconds,
                       ResolvedRequestOptions options, OutputConsumerMode consumer_mode,
                       GenerationObservationOptions observation,
-                      Clock::time_point pending_deadline = {}) {
+                      Clock::time_point pending_deadline                = {},
+                      std::shared_ptr<RoundController> round_controller = {}) {
         const Clock::time_point submitted = Clock::now();
         if (pending_deadline == Clock::time_point{}) {
             pending_deadline = submitted + pending_timeout_;
@@ -214,6 +216,7 @@ public:
                                                 std::move(output), prompt_summary, prepare_seconds,
                                                 std::move(options), consumer_mode, observation,
                                                 pending_deadline, submitted);
+            request->round_controller = std::move(round_controller);
         } catch (...) {
             release_reserved_capacity();
             throw;
@@ -1111,8 +1114,29 @@ private:
                     finish_reasons[row] = FinishReason::Cancelled;
                     continue;
                 }
+                // A controller's limit narrows only this round's budget and the span previewed
+                // against it, so the output policy still owns stop handling and the Engine's
+                // commit invariants hold unchanged.
+                std::uint32_t budget_remaining = request->budget->remaining();
+                FinishReason limit_reason      = request->budget->limit_reason();
+                std::span<const TokenId> previewed = row_tokens;
+                if (request->round_controller != nullptr) {
+                    const RoundVerdict verdict = request->round_controller->review(
+                        RoundOffer{.licensed = row_tokens, .decode_round = decode_round});
+                    if (verdict.limit) {
+                        if (*verdict.limit == 0) {
+                            throw std::invalid_argument("round controller returned a zero limit");
+                        }
+                        if (*verdict.limit < budget_remaining) {
+                            budget_remaining = *verdict.limit;
+                            limit_reason     = FinishReason::OutputLimit;
+                            previewed = row_tokens.first(std::min<std::size_t>(
+                                row_tokens.size(), static_cast<std::size_t>(budget_remaining)));
+                        }
+                    }
+                }
                 const OutputDecision decision = request->output.preview_model(
-                    row_tokens, request->budget->remaining(), request->budget->limit_reason(),
+                    previewed, budget_remaining, limit_reason,
                     request->options.execution.post_thinking_sampling.has_value());
                 const bool sampling_transition =
                     decision.continuation == ContinuationAction::ApplyPostThinkingSampling;

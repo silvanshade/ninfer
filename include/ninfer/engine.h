@@ -11,6 +11,8 @@
 
 namespace ninfer {
 
+class RoundController;
+
 class PreparedPrompt {
 public:
     PreparedPrompt() noexcept;
@@ -98,12 +100,14 @@ public:
     // independently from GPU execution. Streaming mode requires a non-null sink in wait() and
     // publishes one exact GenerationStart before output deltas; Aggregate mode requires a null
     // sink. Observation options request protocol-neutral publication facts without changing the
-    // execution request.
+    // execution request. A non-null round controller reviews every round of this request before
+    // its commit (ninfer/round_control.h).
     [[nodiscard]] GenerationHandle
     submit(PreparedPrompt prompt, RequestOptions options,
            OutputConsumerMode consumer_mode                       = OutputConsumerMode::Aggregate,
            GenerationObservationOptions observation               = {},
-           std::chrono::steady_clock::time_point pending_deadline = {});
+           std::chrono::steady_clock::time_point pending_deadline = {},
+           std::shared_ptr<RoundController> round_controller      = {});
 
     GenerationResult generate(PreparedPrompt prompt, RequestOptions options,
                               OutputSink* sink                     = nullptr,

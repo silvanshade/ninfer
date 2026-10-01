@@ -1,0 +1,52 @@
+# Publishes the ninfer headers infinitum's Engine bridge compiles against, at
+# ghcr.io/silvanshade/ninfer-sdk:<revision>. No library: infinitum's hosted
+# lanes compile and lint the bridge, they never link or run it.
+name: infinitum SDK image
+
+on:
+  push:
+    branches: [ninfer-integration]
+
+permissions: {}
+
+concurrency:
+  group: infinitum-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/silvanshade/ninfer-sdk
+
+jobs:
+  publish:
+    name: publish the SDK image
+    # The private review repository carries this file too; only the public
+    # fork publishes.
+    if: ${{ github.repository == 'silvanshade/ninfer' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # The repository is public: its tarball needs no checkout action.
+      - name: assemble the image tree
+        run: |
+          mkdir -p image/opt/ninfer/lib
+          curl -fsSL "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            | tar -xzf - -C image/opt/ninfer --strip-components=1 --wildcards '*/include'
+          echo "$GITHUB_SHA" > image/opt/ninfer/ninfer.revision
+          printf 'FROM scratch\nCOPY opt /opt\n' > image/Dockerfile
+          find image -maxdepth 3
+      # The files are architecture-independent; both platforms let a native
+      # arm64 build copy them without emulation. The runner's own Docker CLI
+      # publishes, so the workflow needs no third-party action.
+      - name: publish the image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE: https://github.com/${{ github.repository }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use --driver docker-container
+          docker buildx build image --platform linux/amd64,linux/arm64 --push \
+            --tag "${IMAGE}:${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=${SOURCE}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}"
